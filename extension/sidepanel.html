@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tab Tree</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="toolbar">
+        <div class="brand-row">
+          <div class="brand">
+            <img src="icons/icon32.png" alt="" class="brand-icon" />
+            <span class="brand-name" data-i18n="extName">Tab Tree</span>
+          </div>
+          <select id="windowSelect" class="window-select" hidden aria-label="Window"></select>
+          <div class="toolbar-actions">
+            <button id="btnCollapse" class="icon-btn" type="button" title="Collapse all" aria-label="Collapse all">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h16M4 15h10" /></svg>
+            </button>
+            <button id="btnSort" class="icon-btn" type="button" title="Sort tabs by tree" aria-label="Sort tabs by tree">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" /></svg>
+            </button>
+            <button id="btnSettings" class="icon-btn" type="button" title="Settings" aria-label="Settings" aria-expanded="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" />
+                <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.09A1.7 1.7 0 0 0 9 19.35a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.09A1.7 1.7 0 0 0 4.65 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1.03-1.56V3h4v.09A1.7 1.7 0 0 0 15 4.65a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9a1.7 1.7 0 0 0 1.56 1.03H21v4h-.09A1.7 1.7 0 0 0 19.4 15Z" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="search-row">
+          <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+          <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="Search tabs" data-i18n-placeholder="searchPlaceholder" />
+          <button id="searchClear" class="clear-btn" type="button" hidden aria-label="Clear search">×</button>
+          <span id="count" class="count" aria-live="polite"></span>
+        </div>
+      </header>
+
+      <main id="tree" class="tree" role="tree" aria-label="Tab tree" tabindex="0"></main>
+      <div id="empty" class="empty" hidden>
+        <div class="empty-art" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M4 5h6v5H4zM14 10h6v4h-6zM9 15h6v5H9z" /></svg>
+        </div>
+        <p id="emptyText">No tabs</p>
+      </div>
+
+      <footer class="statusbar">
+        <span id="status"></span>
+        <span id="restoreInfo" class="restore-info"></span>
+      </footer>
+
+      <div id="rootDrop" class="root-drop" hidden>
+        <span data-i18n="dropRoot">Drop here to make it top-level</span>
+      </div>
+
+      <div id="settings" class="popover settings" hidden>
+        <h2 data-i18n="settingsTitle">Settings</h2>
+        <label class="setting">
+          <input type="checkbox" id="prefCloseChildren" />
+          <span>
+            <strong data-i18n="closeWithChildren">Close child tabs with their parent</strong>
+            <small data-i18n="closeWithChildrenHint">Off by default: children are promoted one level.</small>
+          </span>
+        </label>
+        <label class="setting">
+          <input type="checkbox" id="prefAutoSort" />
+          <span>
+            <strong data-i18n="autoSort">Keep native tab order in sync</strong>
+            <small data-i18n="autoSortHint">After a drag, flatten the tab strip in tree order.</small>
+          </span>
+        </label>
+        <button id="btnRebuild" class="text-btn" type="button" data-i18n="refresh">Refresh</button>
+      </div>
+
+      <div id="menu" class="popover menu" role="menu" hidden></div>
+      <div id="toast" class="toast" role="status" hidden></div>
+    </div>
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

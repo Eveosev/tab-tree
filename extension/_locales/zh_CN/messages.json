@@ -1,0 +1,158 @@
+{
+  "extName": {
+    "message": "Tab Tree 标签树",
+    "description": "扩展名称。"
+  },
+  "extDesc": {
+    "message": "在 Chrome 侧边栏中以树状结构管理标签页。从链接打开的新标签页会自动成为打开它的页面的子节点。",
+    "description": "扩展描述。"
+  },
+  "actionTitle": {
+    "message": "打开 Tab Tree",
+    "description": "工具栏按钮标题。"
+  },
+  "searchPlaceholder": {
+    "message": "搜索标签页",
+    "description": "搜索框占位符。"
+  },
+  "collapseAll": {
+    "message": "全部折叠",
+    "description": "折叠按钮。"
+  },
+  "expandAll": {
+    "message": "全部展开",
+    "description": "展开按钮。"
+  },
+  "sortTabs": {
+    "message": "按树顺序重排标签栏",
+    "description": "排序按钮。"
+  },
+  "sortTabsHint": {
+    "message": "把原生标签栏重排为与这棵树一致的顺序",
+    "description": "排序按钮提示。"
+  },
+  "settings": {
+    "message": "设置",
+    "description": "设置按钮。"
+  },
+  "refresh": {
+    "message": "刷新",
+    "description": "刷新按钮。"
+  },
+  "settingsTitle": {
+    "message": "设置",
+    "description": "设置面板标题。"
+  },
+  "closeWithChildren": {
+    "message": "关闭父标签时一并关闭子标签",
+    "description": "设置项。"
+  },
+  "closeWithChildrenHint": {
+    "message": "默认关闭：子标签会提升一级保留下来。",
+    "description": "设置项说明。"
+  },
+  "autoSort": {
+    "message": "保持原生标签栏顺序同步",
+    "description": "设置项。"
+  },
+  "autoSortHint": {
+    "message": "拖拽调整层级后，按树的顺序重排原生标签栏。",
+    "description": "设置项说明。"
+  },
+  "dropRoot": {
+    "message": "拖到这里成为顶级标签",
+    "description": "拖拽目标提示。"
+  },
+  "activate": {
+    "message": "切换到该标签",
+    "description": "右键菜单项。"
+  },
+  "close": {
+    "message": "关闭",
+    "description": "关闭操作。"
+  },
+  "closeSubtree": {
+    "message": "关闭该标签及其子标签",
+    "description": "右键菜单项。"
+  },
+  "makeRoot": {
+    "message": "提升为顶级标签",
+    "description": "右键菜单项。"
+  },
+  "collapseSubtree": {
+    "message": "折叠子节点",
+    "description": "右键菜单项。"
+  },
+  "expandSubtree": {
+    "message": "展开子节点",
+    "description": "右键菜单项。"
+  },
+  "window": {
+    "message": "窗口",
+    "description": "窗口选择器。"
+  },
+  "tabs": {
+    "message": "个标签",
+    "description": "单位。"
+  },
+  "shown": {
+    "message": "个结果",
+    "description": "搜索结果计数。"
+  },
+  "topLevel": {
+    "message": "个顶级",
+    "description": "根节点计数。"
+  },
+  "linksRestored": {
+    "message": "条关系已恢复",
+    "description": "会话恢复状态。"
+  },
+  "pinned": {
+    "message": "已固定",
+    "description": "固定标签徽标。"
+  },
+  "audible": {
+    "message": "正在播放声音",
+    "description": "发声标签徽标。"
+  },
+  "orphanHint": {
+    "message": "打开它的标签已关闭，已提升为顶级标签。",
+    "description": "孤立节点提示。"
+  },
+  "inferredHint": {
+    "message": "该关系由上次浏览器会话恢复。",
+    "description": "恢复节点提示。"
+  },
+  "closeHint": {
+    "message": "关闭标签",
+    "description": "关闭按钮提示。"
+  },
+  "notConnected": {
+    "message": "Tab Tree 后台正在启动…",
+    "description": "连接错误。"
+  },
+  "error": {
+    "message": "出现了一点问题",
+    "description": "通用错误。"
+  },
+  "noTabs": {
+    "message": "这个窗口中没有标签页",
+    "description": "空状态。"
+  },
+  "noMatches": {
+    "message": "没有匹配的标签页",
+    "description": "搜索空状态。"
+  },
+  "windowLabel": {
+    "message": "窗口 $1 · $2 个标签",
+    "description": "窗口选择项。",
+    "placeholders": {
+      "index": {
+        "content": "$1"
+      },
+      "count": {
+        "content": "$2"
+      }
+    }
+  }
+}

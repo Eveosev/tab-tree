@@ -1,0 +1,158 @@
+{
+  "extName": {
+    "message": "Tab Tree",
+    "description": "Extension name."
+  },
+  "extDesc": {
+    "message": "Tree-style tab management in Chrome's side panel. Tabs opened from a link become children of the page that opened them.",
+    "description": "Extension description."
+  },
+  "actionTitle": {
+    "message": "Open Tab Tree",
+    "description": "Toolbar action title."
+  },
+  "searchPlaceholder": {
+    "message": "Search tabs",
+    "description": "Search box placeholder."
+  },
+  "collapseAll": {
+    "message": "Collapse all",
+    "description": "Collapse all button."
+  },
+  "expandAll": {
+    "message": "Expand all",
+    "description": "Expand all button."
+  },
+  "sortTabs": {
+    "message": "Sort tabs by tree",
+    "description": "Sort native tabs button."
+  },
+  "sortTabsHint": {
+    "message": "Reorder the native tab strip to match this tree",
+    "description": "Sort button tooltip."
+  },
+  "settings": {
+    "message": "Settings",
+    "description": "Settings button."
+  },
+  "refresh": {
+    "message": "Refresh",
+    "description": "Refresh button."
+  },
+  "settingsTitle": {
+    "message": "Settings",
+    "description": "Settings popover title."
+  },
+  "closeWithChildren": {
+    "message": "Close child tabs with their parent",
+    "description": "Setting label."
+  },
+  "closeWithChildrenHint": {
+    "message": "Off by default: children are promoted one level.",
+    "description": "Setting hint."
+  },
+  "autoSort": {
+    "message": "Keep native tab order in sync",
+    "description": "Setting label."
+  },
+  "autoSortHint": {
+    "message": "After a drag, flatten the tab strip in tree order.",
+    "description": "Setting hint."
+  },
+  "dropRoot": {
+    "message": "Drop here to make it top-level",
+    "description": "Drag target label."
+  },
+  "activate": {
+    "message": "Activate",
+    "description": "Context menu item."
+  },
+  "close": {
+    "message": "Close",
+    "description": "Close action."
+  },
+  "closeSubtree": {
+    "message": "Close tab and children",
+    "description": "Context menu item."
+  },
+  "makeRoot": {
+    "message": "Make top-level",
+    "description": "Context menu item."
+  },
+  "collapseSubtree": {
+    "message": "Collapse children",
+    "description": "Context menu item."
+  },
+  "expandSubtree": {
+    "message": "Expand children",
+    "description": "Context menu item."
+  },
+  "window": {
+    "message": "Window",
+    "description": "Window selector label."
+  },
+  "tabs": {
+    "message": "tabs",
+    "description": "Unit label."
+  },
+  "shown": {
+    "message": "shown",
+    "description": "Search result count label."
+  },
+  "topLevel": {
+    "message": "top-level",
+    "description": "Root tab count label."
+  },
+  "linksRestored": {
+    "message": "links restored",
+    "description": "Session restore status."
+  },
+  "pinned": {
+    "message": "Pinned",
+    "description": "Pinned tab badge."
+  },
+  "audible": {
+    "message": "Playing audio",
+    "description": "Audible tab badge."
+  },
+  "orphanHint": {
+    "message": "The tab that opened this one was closed; promoted to top level.",
+    "description": "Orphan badge tooltip."
+  },
+  "inferredHint": {
+    "message": "Relationship restored from the previous browser session.",
+    "description": "Restored badge tooltip."
+  },
+  "closeHint": {
+    "message": "Close tab",
+    "description": "Close button tooltip."
+  },
+  "notConnected": {
+    "message": "Tab Tree background is starting…",
+    "description": "Connection error."
+  },
+  "error": {
+    "message": "Something went wrong",
+    "description": "Generic error."
+  },
+  "noTabs": {
+    "message": "No tabs in this window",
+    "description": "Empty state."
+  },
+  "noMatches": {
+    "message": "No matching tabs",
+    "description": "Empty search state."
+  },
+  "windowLabel": {
+    "message": "Window $1 · $2 tabs",
+    "description": "Window selector option.",
+    "placeholders": {
+      "index": {
+        "content": "$1"
+      },
+      "count": {
+        "content": "$2"
+      }
+    }
+  }
+}
