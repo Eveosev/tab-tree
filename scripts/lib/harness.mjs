@@ -268,11 +268,12 @@ export async function jsonTargets(base) {
 }
 
 /** Wait for the extension's service worker and return a connected client. */
-export async function waitForWorker(base, { name = 'Tab Tree', timeout = 25_000 } = {}) {
+export async function waitForWorker(base, { name = 'Tab Tree', timeout = 25_000, excludeTargetId = null } = {}) {
   return waitFor(
     async () => {
       for (const target of await jsonTargets(base)) {
         if (target.type !== 'service_worker' || !target.url.startsWith('chrome-extension://')) continue;
+        if (excludeTargetId && target.id === excludeTargetId) continue;
         const client = new CDP(target.webSocketDebuggerUrl);
         try {
           await client.connect();
@@ -291,6 +292,86 @@ export async function waitForWorker(base, { name = 'Tab Tree', timeout = 25_000 
     },
     { timeout, label: `${name} service worker` },
   );
+}
+
+/** Connect to the browser-level CDP endpoint (target management, not pages). */
+export async function connectBrowser(base) {
+  const response = await fetch(`${base}/json/version`);
+  if (!response.ok) throw new Error(`/json/version ${response.status}`);
+  const version = await response.json();
+  if (!version.webSocketDebuggerUrl) throw new Error('/json/version returned no webSocketDebuggerUrl');
+  const client = new CDP(version.webSocketDebuggerUrl);
+  await client.connect();
+  return client;
+}
+
+/**
+ * Terminate the extension's MV3 service worker the same way Chrome does under
+ * memory pressure, and prove the old target is gone.
+ *
+ * Extension pages are closed first because their long-lived ports keep the
+ * worker alive. Chrome reclaims the idle worker after ~30–40 s; the old CDP
+ * connection to the worker must be closed by the caller before invoking this.
+ *
+ * `Target.closeTarget` is deliberately not used: Chrome treats closing an
+ * extension worker target as an extension unload and clears
+ * `chrome.storage.session`, which would hide the very state this test needs to
+ * observe. Idle reclaim preserves session storage, exactly like a real wake.
+ *
+ * @param {string} base
+ * @param {{extensionId: string, targetId: string, timeout?: number}} options
+ * @returns {Promise<{method: string, elapsed: number, targetId: string}>}
+ */
+export async function terminateExtensionWorker(base, { extensionId, targetId, timeout = 75_000 } = {}) {
+  if (!targetId) throw new Error('terminateExtensionWorker requires the targetId of the running worker');
+  const started = Date.now();
+
+  const browser = await connectBrowser(base);
+  try {
+    for (const target of await jsonTargets(base)) {
+      if (target.type === 'page' && target.url.startsWith(`chrome-extension://${extensionId}/`)) {
+        await browser.send('Target.closeTarget', { targetId: target.id }).catch(() => {});
+      }
+    }
+  } finally {
+    browser.close();
+  }
+
+  await waitFor(
+    async () => {
+      const targets = await jsonTargets(base);
+      return !targets.some((target) => target.id === targetId);
+    },
+    { timeout, interval: 500, label: `idle reclaim of service worker ${targetId}` },
+  );
+
+  return { method: 'idle-reclaim', elapsed: Date.now() - started, targetId };
+}
+
+/**
+ * Wake a terminated worker by opening the panel document, then wait for a
+ * *different* service worker target. A live old target is treated as failure:
+ * checking merely that "some worker exists" is the false-positive this helper
+ * exists to prevent.
+ *
+ * @param {string} base
+ * @param {{extensionId: string, oldTargetId: string, timeout?: number}} options
+ */
+export async function wakeExtensionWorker(base, { extensionId, oldTargetId, timeout = 30_000 } = {}) {
+  const browser = await connectBrowser(base);
+  try {
+    await browser.send('Target.createTarget', {
+      url: `chrome-extension://${extensionId}/sidepanel.html`,
+      background: false,
+    });
+  } finally {
+    browser.close();
+  }
+  const worker = await waitForWorker(base, { timeout, excludeTargetId: oldTargetId });
+  if (worker.target.id === oldTargetId) {
+    throw new Error('service worker target id did not change after wake');
+  }
+  return worker;
 }
 
 /** Wait for a page target whose URL contains `urlPart` and connect to it. */

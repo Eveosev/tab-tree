@@ -1,6 +1,6 @@
 # Tab Tree — technical design
 
-Version: 0.1.2 · Chrome 114+ · MV3 · zero-build ES modules
+Version: 0.1.3 · Chrome 114+ · MV3 · zero-build ES modules
 
 ## 1. Goals and non-goals
 
@@ -193,7 +193,16 @@ session and only treats a missing marker (or `runtime.onStartup`) as a restart.
 A plain worker wake therefore never overwrites the live tree with an old
 snapshot.
 
-v0.1.2 removes the old “no live `openerTabId` anywhere” guard. Real restarts can
+v0.1.3 fixes the session-state contract. `sessionMarker` was not actually part
+of the `storage.session` read set, so every plain worker wake looked like a
+browser restart and replayed the snapshot; `inferred` (restored-relation) flags
+were not persisted at all, so a correct marker read would have dropped the
+restore badges. Marker, overrides, edges, collapse state and inferred flags are
+now read/written together through `lib/session-state.js` (covered by unit
+tests). `restoreStats` is cleared when a new browser session starts, so a worker
+wake can never show the previous session’s “N links restored”.
+
+v0.1.2 removed the old “no live `openerTabId` anywhere” guard. Real restarts can
 leave one incidental opener (Chrome sometimes restores an extra `about:blank`
 tab with an opener), which suppressed the whole restore. The retry loop is a
 better guard:
@@ -216,7 +225,8 @@ service worker can start before the tabs exist, and a single one-shot match at
 - Window pairing: greedy max URL-overlap between saved windows and live windows (a window can be reused after restart, so ids are not trustworthy).
 - Tab pairing inside a pair: **longest common subsequence** over `normalizedUrl + pinned` ordered by native index. LCS tolerates tabs closed and reordered while preserving order.
 - Transfer a parent link only if both endpoints matched; otherwise the tab becomes a root with `inferred`/`lost` semantics. Every restored node is flagged `inferred` and rendered with a restore badge.
-- Stats (`matchedTabs / oldNodes / relations / windows`) are broadcast and shown in the panel footer.
+- Stats (`matchedTabs / oldNodes / relations / windows`) are broadcast and shown in the panel footer. A worker wake in the same browser session restores `state.restore` from `storage.local.restoreStats` instead of re-running the matcher.
+- `inferred` is session-persisted alongside `overrides/edges/collapsed`; `init()` and `buildNow()` prune any inferred id whose tab or override disappeared, so a stale badge cannot survive a drag or a close.
 
 ### 6.3 Known limits
 
@@ -272,9 +282,10 @@ Every intent is validated in the worker; the panel cannot inject an arbitrary pa
 | `edges` | session | `[childTabId, parentTabId][]` captured at creation | browser session / worker restarts |
 | `overrides` | session | `[tabId, parentId \| null][]` | browser session / worker restarts |
 | `collapsed` | session | `tabId[]` | browser session / worker restarts |
-| `sessionMarker` | session | timestamp written on first init | browser session; its absence means “new browser session” |
+| `inferred` | session | `tabId[]` whose parent came from restore | browser session / worker restarts |
+| `sessionMarker` | session | timestamp written on first init | browser session; its absence means “new browser session”. Read back on every wake; never replayed when present. |
 
-Wake path: module loads → `init()` loads storage → detects the session marker → queries tabs/windows → prunes dead edges/overrides → maybe restores → `buildNow()` → port clients get a snapshot. Event listeners are registered synchronously, so no early events are lost. Creation edges are written immediately (not debounced) so a worker death right after a click cannot lose the relation.
+Wake path: module loads → `init()` loads local + session storage through `lib/session-state.js` → detects the session marker → queries tabs/windows → prunes dead edges/overrides/inferred → restores only on a missing marker (or `onStartup`) → `buildNow()` → port clients get a snapshot. Event listeners can fire during the async load; session writes are held until the merge completes so they cannot clobber the previous worker’s state. Event listeners are registered synchronously, so no early events are lost. Creation edges are written immediately (not debounced) so a worker death right after a click cannot lose the relation.
 
 Change detection uses `revision`; unchanged rebuilds do not broadcast or persist.
 
@@ -333,14 +344,14 @@ Change detection uses `revision`; unchanged rebuilds do not broadcast or persist
 
 | Layer | Tool | Coverage |
 | --- | --- | --- |
-| Engine | `node --test` | 35 cases: inference (opener/edge/override priority), orphan, cross-window, cycles, DFS ordering, descendant count, collapse/search, reparent validation, native order, restore (dead tab, sealed windows, duplicates, restart marker), edge pruning/promotion, serialization, content-aware revision hash, depth cap, prefs |
-| Static | `scripts/check.mjs` | every `.js` parses, JSON valid, manifest files exist, i18n key parity and usage, version consistency, no `<all_urls>` |
-| Build | `scripts/build.mjs` | zip `dist/tab-tree-v0.1.2.zip`, print sha256/size |
-| E2E | `scripts/smoke.mjs` | real Chrome for Testing: load extension, creation-edge nesting, panel indentation, collapse/expand, close, worker termination recovery, light/dark screenshots |
+| Engine | `node --test` | 41 cases: inference (opener/edge/override priority), orphan, cross-window, cycles, DFS ordering, descendant count, collapse/search, reparent validation, native order, restore (dead tab, sealed windows, duplicates, restart marker), edge pruning/promotion, serialization, content-aware revision hash, depth cap, prefs, plus session-state round-trip (marker + inferred included) |
+| Static | `scripts/check.mjs` | every `.js` parses, JSON valid, manifest files exist, i18n key parity and usage, version consistency, no `<all_urls>`, real scan for remote `<script src>` / `eval` / `new Function` / `fetch` / XHR |
+| Build | `scripts/build.mjs` | zip `dist/tab-tree-v0.1.3.zip`, print sha256/size |
+| E2E | `scripts/smoke.mjs` | real Chrome for Testing: load extension, creation-edge nesting, panel indentation, collapse/expand, close, idle worker reclaim + wake (no restore replay, no badges/footer, edges/overrides preserved), light/dark screenshots (44/44) |
 | Acceptance | `scripts/e2e-real-links.mjs` | real mouse events in Chrome for Testing: A→B, A→C, B→D, Cmd/Ctrl+click background child, opener-less root; asserts snapshot depths and panel indentation (8/8) |
 | Interaction | `scripts/e2e-panel.mjs` | real pointer drag: root→child, child→top-level, cycle rejection toast; per-window panel binding (11/11) |
-| Restart | `scripts/e2e-restart.mjs` | same profile, two real Chrome processes: snapshot persisted, session wiped, A→B→C rebuilt with inferred badges and stats (10/10) |
-| Performance | `scripts/bench-tabs.mjs` | 300 and 500 tabs: rebuild p95, scroll repaint, search filter; DOM stays virtualized (7/7) |
+| Restart | `scripts/e2e-restart.mjs` | same profile, two real Chrome processes: snapshot persisted, session wiped, A→B→C rebuilt with inferred badges and stats; then the worker is idle-reclaimed and the restore badges/footer survive without re-running the matcher (19/19) |
+| Performance | `scripts/bench-tabs.mjs` | 300 and 500 tabs: rebuild p95, scroll repaint, search filter; DOM stays virtualized (8/8) |
 | Manual | chrome://extensions | load unpacked, open side panel, keyboard, native sort, left/right panel position |
 
 **Why Chrome for Testing:** branded Chrome 137+ ignores `--load-extension` (malware mitigation), so automated e2e uses Chrome for Testing / Chromium (`CHROME_PATH` override supported).
@@ -354,10 +365,10 @@ Change detection uses `revision`; unchanged rebuilds do not broadcast or persist
 | 3-level nesting, collapse persists | DFS + collapsed set | unit tests; smoke collapse/expand |
 | Parent close promotes children one level / optional subtree close | `closeTab`, `planOrphanPromotion`, `getDescendantIds` | unit test + real-browser e2e (`closing B promotes D to a depth-1 child of A`) |
 | Drag reparent + native DFS order | pointer drag, `canReparent`, `reorderNative` | `npm run test:panel` 11/11 real pointer events, including cycle rejection |
-| Worker death → recover <5 s | port reconnect + rebuild | smoke kills worker, waits for revival |
-| Browser restart restore uses a real restart marker, not a live-opener proxy | `storage.session` marker + `onStartup` + retry loop | `npm run test:restart` 10/10 across two real browser processes |
+| Worker death → tree intact, no false restore | port reconnect + rebuild; marker-only restore | smoke idle-reclaims the worker (proven different target id) and asserts no `relation=restore`, no inferred badge/footer, unchanged marker/edges/overrides |
+| Browser restart restore uses a real restart marker, not a live-opener proxy; restore survives a later worker wake | `storage.session` marker + `onStartup` + retry loop + persisted `inferred` | `npm run test:restart` 19/19 across two real browser processes and a post-restore wake |
 | Multi-window forests, panel follows its host window | windowId partitioning + `detectHostWindow()` | `npm run test:panel` window-picker assertion; unit tests |
-| 500 tabs performance | virtualization + coalescing | `npm run bench` measured: 300 tabs rebuild p95 8.5 ms, scroll 34.0 ms, search 27.0 ms; 500 tabs rebuild p95 19.9 ms (details in verification.md) |
+| 500 tabs performance | virtualization + coalescing | `npm run bench` measured: 300 tabs rebuild p95 14.4 ms, scroll 34.2 ms, search 31.4 ms; 500 tabs rebuild p95 20.6 ms (details in verification.md) |
 | No `<all_urls>`/remote code; loadable | manifest check | `npm run check`, `npm run build`, smoke load |
 
 ## 15. Risks and mitigations
@@ -384,5 +395,5 @@ Change detection uses `revision`; unchanged rebuilds do not broadcast or persist
 
 - Build cost: O(n log n) per rebuild (sort + DFS), trivial for 500 tabs; the engine is pure and allocation-light.
 - Panel: at most ~25 rows in the DOM at 380×760; scroll renders only when the row range changes.
-- Broadcast: full snapshot ≈75 KB for 500 tabs; coalesced at 60 ms. A delta protocol is unnecessary at this scale and would add reconciliation bugs.
-- Storage: the restore snapshot stays well under 1 MB even for a 500-tab session (the full broadcast snapshot measured 214 KiB), debounced 900 ms; well under the `storage.local` quota (10 MB, `unlimitedStorage` not required).
+- Broadcast: full snapshot ≈216 KiB for 500 tabs; coalesced at 60 ms. A delta protocol is unnecessary at this scale and would add reconciliation bugs.
+- Storage: the restore snapshot stays well under 1 MB even for a 500-tab session (the full broadcast snapshot measured 216 KiB), debounced 900 ms; well under the `storage.local` quota (10 MB, `unlimitedStorage` not required).

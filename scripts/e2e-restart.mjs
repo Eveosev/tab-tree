@@ -29,8 +29,10 @@ import {
   requireChrome,
   sleep,
   startServer,
+  terminateExtensionWorker,
   waitFor,
   waitForWorker,
+  wakeExtensionWorker,
 } from './lib/harness.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -289,6 +291,103 @@ try {
   );
   const restoreLabel = await panel.evaluate('document.getElementById("restoreInfo")?.textContent || ""');
   check('panel shows the restored-links summary', /2\s+links restored/i.test(restoreLabel), `"${restoreLabel}"`);
+
+  const badgesBeforeWake = await panel.evaluate('document.querySelectorAll(".badge.is-inferred").length');
+  check('restored rows carry two inferred badges before the worker wake', badgesBeforeWake === 2, String(badgesBeforeWake));
+
+  // ---- Terminate the worker *after* a successful restore -----------------
+  // A plain worker wake must keep the restored relations, badges and summary;
+  // it must not re-run the snapshot matcher or rewrite its statistics.
+  const restoreBeforeWake = await snapshot(sw);
+  const appliedAtBeforeWake = restoreBeforeWake?.restore?.appliedAt;
+  const markerBeforeWake = await sw.evaluate(
+    `chrome.storage.session.get('sessionMarker').then((value) => value.sessionMarker ?? null)`,
+  );
+  check('session marker is present after the restart', Number.isInteger(markerBeforeWake), String(markerBeforeWake));
+
+  sw.close();
+  const terminated = await terminateExtensionWorker(base, {
+    extensionId,
+    targetId: worker.target.id,
+  }).catch((error) => ({ error: error.message }));
+  if (terminated?.error) throw new Error(`could not terminate the service worker: ${terminated.error}`);
+  check(
+    'service worker target disappears after the post-restore termination',
+    terminated.method === 'idle-reclaim' && terminated.elapsed < 75_000,
+    `${terminated.method} in ${terminated.elapsed} ms`,
+  );
+
+  const revivedWorker = await wakeExtensionWorker(base, {
+    extensionId,
+    oldTargetId: worker.target.id,
+  });
+  const revivedSw = track(revivedWorker.client);
+  check(
+    'service worker wakes with a different target id after the restore',
+    revivedWorker.target.id !== worker.target.id,
+    `${worker.target.id} -> ${revivedWorker.target.id}`,
+  );
+
+  const afterWake = await waitFor(
+    async () => {
+      const snap = await snapshot(revivedSw);
+      const a = nodeByPath(snap, appUrl, '/a');
+      const b = nodeByPath(snap, appUrl, '/b');
+      const c = nodeByPath(snap, appUrl, '/c');
+      if (!a || !b || !c) return null;
+      return b.parentId === a.tabId && c.parentId === b.tabId && c.depth === 2 ? snap : null;
+    },
+    { timeout: 20_000, label: 'restored tree after worker wake' },
+  );
+  const bAfterWake = nodeByPath(afterWake, appUrl, '/b');
+  const cAfterWake = nodeByPath(afterWake, appUrl, '/c');
+  check(
+    'restored relations survive a plain worker wake',
+    bAfterWake?.inferred === true &&
+      cAfterWake?.inferred === true &&
+      bAfterWake?.relation === 'restore' &&
+      cAfterWake?.relation === 'restore',
+    `B.inferred=${bAfterWake?.inferred} C.relation=${cAfterWake?.relation}`,
+  );
+  check(
+    'the post-restore worker wake does not re-run the snapshot matcher',
+    afterWake.restore?.appliedAt === appliedAtBeforeWake,
+    `${appliedAtBeforeWake} -> ${afterWake.restore?.appliedAt}`,
+  );
+
+  // The panel reopened by the wake helper must still show the restore summary.
+  const panelAfterTarget = await waitFor(
+    async () => {
+      const targets = await jsonTargets(base);
+      return targets.find((item) => item.type === 'page' && item.url.endsWith('/sidepanel.html')) || null;
+    },
+    { label: 'panel after post-restore wake' },
+  );
+  const panelAfter = new CDP(panelAfterTarget.webSocketDebuggerUrl);
+  await panelAfter.connect();
+  await panelAfter.send('Runtime.enable');
+  await panelAfter.send('Page.enable');
+  track(panelAfter);
+  const afterRows = await waitFor(
+    async () => {
+      const raw = await panelAfter.evaluate(
+        'JSON.stringify([...document.querySelectorAll(".row")].map((row) => ({ title: row.querySelector(".title")?.textContent || "", depth: Number(row.dataset.depth) })))',
+      );
+      const parsed = JSON.parse(raw || '[]');
+      return parsed.some((row) => row.title.includes('C restore grandchild')) ? parsed : null;
+    },
+    { timeout: 15_000, label: 'panel rows after post-restore wake' },
+  );
+  const rowCAfter = afterRows.find((row) => row.title.includes('C restore grandchild'));
+  check(
+    'panel keeps the restored grandchild two levels deep after the wake',
+    rowCAfter?.depth === 2,
+    `depth=${rowCAfter?.depth}`,
+  );
+  const labelAfter = await panelAfter.evaluate('document.getElementById("restoreInfo")?.textContent || ""');
+  check('panel keeps the restored-links summary after the wake', /2\s+links restored/i.test(labelAfter), `"${labelAfter}"`);
+  const badgesAfter = await panelAfter.evaluate('document.querySelectorAll(".badge.is-inferred").length');
+  check('panel keeps two inferred badges after the wake', badgesAfter === 2, String(badgesAfter));
 
   recorder.finish();
 } catch (error) {

@@ -25,13 +25,14 @@ import {
   pruneOverrides,
   serializeRestoreSnapshot,
 } from './lib/tree-engine.js';
+import {
+  readSessionState,
+  writeSessionState,
+} from './lib/session-state.js';
 
 const PORT_NAME = 'tab-tree';
 const STORAGE = {
   prefs: 'prefs',
-  overrides: 'overrides',
-  edges: 'edges',
-  collapsed: 'collapsed',
   restoreSnapshot: 'restoreSnapshot',
   restoreStats: 'restoreStats',
   sessionMarker: 'sessionMarker',
@@ -80,6 +81,14 @@ let persistTimer = null;
 let sessionTimer = null;
 let building = false;
 let buildAgain = false;
+/**
+ * Event listeners run synchronously while `loadState()` is still awaiting
+ * `storage.session`. Persisting before the merge would overwrite the previous
+ * worker's edges/overrides with a nearly empty map. Captures still mutate
+ * `state` immediately (they must, to survive a fast death); the first write
+ * happens after the merge and contains the union.
+ */
+let sessionReady = false;
 
 /* -------------------------------------------------------------------------- */
 /* Persistence                                                                */
@@ -88,45 +97,33 @@ let buildAgain = false;
 async function loadState() {
   const [local, session] = await Promise.all([
     chrome.storage.local.get([STORAGE.prefs, STORAGE.restoreSnapshot, STORAGE.restoreStats]),
-    chrome.storage.session.get([STORAGE.overrides, STORAGE.edges, STORAGE.collapsed]),
+    readSessionState(chrome.storage.session),
   ]);
   state.prefs = { ...DEFAULT_PREFS, ...(local[STORAGE.prefs] || {}) };
-  if (Array.isArray(session[STORAGE.overrides])) {
-    for (const entry of session[STORAGE.overrides]) {
-      if (Array.isArray(entry) && Number.isInteger(entry[0])) {
-        state.overrides.set(entry[0], entry[1] === null ? null : Number(entry[1]));
-      }
-    }
+  for (const [childId, parentId] of session.overrides) {
+    // A user action that fired while this worker was starting is newer than
+    // the persisted override; never clobber it.
+    if (!state.overrides.has(childId)) state.overrides.set(childId, parentId);
   }
-  if (Array.isArray(session[STORAGE.edges])) {
-    for (const entry of session[STORAGE.edges]) {
-      // A creation edge captured by an event that fired while this worker was
-      // starting is newer than the persisted one; never clobber it.
-      if (Array.isArray(entry) && Number.isInteger(entry[0]) && Number.isInteger(entry[1])) {
-        if (!state.edges.has(entry[0])) state.edges.set(entry[0], entry[1]);
-      }
-    }
+  for (const [childId, parentId] of session.edges) {
+    // A creation edge captured by an event that fired while this worker was
+    // starting is newer than the persisted one; never clobber it.
+    if (!state.edges.has(childId)) state.edges.set(childId, parentId);
   }
-  if (Array.isArray(session[STORAGE.collapsed])) {
-    for (const tabId of session[STORAGE.collapsed]) {
-      if (Number.isInteger(tabId)) state.collapsed.add(tabId);
-    }
-  }
+  for (const tabId of session.collapsed) state.collapsed.add(tabId);
+  for (const tabId of session.inferred) state.inferred.add(tabId);
   return {
     restoreSnapshot: local[STORAGE.restoreSnapshot] || null,
     restoreStats: local[STORAGE.restoreStats] || null,
-    sessionMarker: session[STORAGE.sessionMarker] ?? null,
+    sessionMarker: session.sessionMarker,
   };
 }
 
 function persistSession() {
-  return chrome.storage.session
-    .set({
-      [STORAGE.overrides]: [...state.overrides.entries()],
-      [STORAGE.edges]: [...state.edges.entries()],
-      [STORAGE.collapsed]: [...state.collapsed],
-    })
-    .catch((error) => console.warn('[tab-tree] session persist failed', error));
+  if (!sessionReady) return Promise.resolve();
+  return writeSessionState(chrome.storage.session, state).catch((error) =>
+    console.warn('[tab-tree] session persist failed', error),
+  );
 }
 
 function saveSessionState({ immediate = false } = {}) {
@@ -279,7 +276,7 @@ async function buildNow(reason = 'event') {
       if (!liveIds.has(tabId)) state.collapsed.delete(tabId);
     }
     for (const tabId of [...state.inferred]) {
-      if (!liveIds.has(tabId)) state.inferred.delete(tabId);
+      if (!liveIds.has(tabId) || !state.overrides.has(tabId)) state.inferred.delete(tabId);
     }
     for (const tabId of [...state.closing]) {
       if (!liveIds.has(tabId)) state.closing.delete(tabId);
@@ -441,14 +438,31 @@ function finalizeRestore(reason) {
 
 async function init() {
   const local = await loadState();
-  const newBrowserSession = local.sessionMarker === null;
+  const newBrowserSession = !Number.isInteger(local.sessionMarker);
   if (newBrowserSession) {
     await chrome.storage.session.set({ [STORAGE.sessionMarker]: Date.now() });
+    // Statistics from the previous browser session must not leak into this one
+    // and make the panel claim links were restored when nothing was replayed.
+    await chrome.storage.local.remove(STORAGE.restoreStats);
   }
 
   const tabs = await chrome.tabs.query({});
-  pruneOverrides(state.overrides, new Set(tabs.map((tab) => tab.id)));
+  const liveIds = new Set(tabs.map((tab) => tab.id));
+  pruneOverrides(state.overrides, liveIds);
   pruneEdges(state.edges, tabs);
+
+  // The merge above is complete; from now on event-driven writes are safe.
+  sessionReady = true;
+
+  // A restored flag is only meaningful while its override is alive and still
+  // applied; drop orphans so a later worker wake cannot resurrect a stale badge.
+  for (const tabId of [...state.inferred]) {
+    if (!liveIds.has(tabId) || !state.overrides.has(tabId)) state.inferred.delete(tabId);
+  }
+
+  // Persist the union immediately so a capture that arrived during load is not
+  // lost if the worker dies before the debounce fires.
+  saveSessionState({ immediate: true });
 
   // `storage.session` survives service-worker restarts but is wiped when the
   // browser restarts. A missing marker (or an onStartup wake) is therefore the
@@ -461,7 +475,8 @@ async function init() {
     if (local.restoreSnapshot) beginRestore(local.restoreSnapshot, tabs);
   } else if (local.restoreStats) {
     // A worker wake inside the same browser session: keep showing the summary
-    // of the restore that happened when the session started.
+    // of the restore that happened when the session started, but never re-run
+    // the snapshot matcher (that would mark live tabs as "restored" again).
     state.restore = local.restoreStats;
   }
 

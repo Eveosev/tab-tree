@@ -1,6 +1,6 @@
 {
   "name": "tab-tree",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "description": "Tree-style tab management for Chrome's side panel (MV3, zero build step).",

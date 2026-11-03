@@ -107,6 +107,25 @@ if (manifestVersion !== packageJson.version) {
   failures.push(`version mismatch: manifest ${manifestVersion} vs package.json ${packageJson.version}`);
 }
 
+// Real remote-code scan: the previous wording claimed this without checking.
+// Everything the extension executes must ship inside the zip.
+const extensionFiles = walk(extension).filter((file) => /\.(m?js|html)$/.test(file));
+const remoteCodePatterns = [
+  { label: 'remote <script src>', pattern: /<script[^>]+src\s*=\s*["'](?:https?:)?\/\//i },
+  { label: 'eval()', pattern: /\beval\s*\(/ },
+  { label: 'new Function()', pattern: /\bnew\s+Function\s*\(/ },
+  { label: 'XMLHttpRequest', pattern: /\bXMLHttpRequest\b/ },
+  { label: 'fetch()', pattern: /\bfetch\s*\(/ },
+];
+for (const file of extensionFiles) {
+  const content = fs.readFileSync(file, 'utf8');
+  for (const { label, pattern } of remoteCodePatterns) {
+    if (pattern.test(content)) {
+      failures.push(`${path.relative(root, file)}: remote/dynamic code (${label})`);
+    }
+  }
+}
+
 if (failures.length > 0) {
   console.error(`✖ ${failures.length} check(s) failed`);
   for (const failure of failures) console.error(`  - ${failure}`);
@@ -116,4 +135,5 @@ if (failures.length > 0) {
 console.log(`✔ ${files.length} files checked`);
 console.log(`✔ manifest v${manifestVersion}: ${manifest.permissions.join(', ')}`);
 console.log(`✔ i18n: ${Object.keys(enMessages).length} EN keys / ${Object.keys(zhMessages).length} ZH keys`);
-console.log(`✔ no <all_urls>, no remote scripts`);
+console.log(`✔ no <all_urls>`);
+console.log(`✔ no remote code (${extensionFiles.length} extension files scanned: script src, eval, Function, fetch, XHR)`);

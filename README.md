@@ -43,7 +43,7 @@ The tree lives in the native **side panel** (Chrome 114+), next to the page you 
 3. **Load unpacked** → select the `extension/` directory.
 4. Click the Tab Tree toolbar icon (or the side-panel button) to open the panel.
 
-A packaged build is also available: `npm run build` creates `dist/tab-tree-v0.1.2.zip`.
+A packaged build is also available: `npm run build` creates `dist/tab-tree-v0.1.3.zip`.
 
 > Chrome 137+ ignores `--load-extension` on branded builds; use Chrome for Testing/Chromium for automated runs (see *Development*).
 
@@ -86,7 +86,7 @@ flowchart LR
 
 - **Parent inference:** explicit override → captured creation edge → live `openerTabId` → root. A dead opener is marked `orphan`; an override chain that would cycle is broken defensively. Closing a parent promotes its direct children one level (A > B > C becomes A > C); “close children with parent” is available in Settings.
 - **Rebuild on wake:** MV3 workers are disposable. Every wake re-queries tabs and recomputes the forest, so no event can be permanently lost.
-- **Restore:** a compact `{url, index, parentId}` snapshot is written to `storage.local`; a marker in `storage.session` distinguishes a real browser restart from a service-worker wake (a live-opener guard additionally avoids overwriting an extension reload with intact relations). After a restart, windows are paired by URL overlap and tabs are aligned with LCS over normalized URLs, then parent links are transferred. Uncertain links are marked and can be re-hung by dragging.
+- **Restore:** a compact `{url, index, parentId}` snapshot is written to `storage.local`; a marker in `storage.session` distinguishes a real browser restart from a service-worker wake. A plain wake never replays the snapshot: edges, overrides, collapse state and restored (`inferred`) flags are all persisted in `storage.session`, and only a missing marker triggers restoration. After a restart, windows are paired by URL overlap and tabs are aligned with LCS over normalized URLs, then parent links are transferred. Uncertain links are marked and can be re-hung by dragging.
 - **Ordering:** siblings follow `tab.index`; DFS flattening defines native order after an explicit sort.
 
 More detail: [design](docs/design.md) · [中文设计说明](docs/design.zh.md) · [research notes](docs/research.md) · [verification report](docs/verification.md).
@@ -97,7 +97,7 @@ More detail: [design](docs/design.md) · [中文设计说明](docs/design.zh.md)
 | --- | --- |
 | `tabs` | Read tab metadata (`openerTabId`, title, URL, favicon), activate/close/move tabs on user action. |
 | `sidePanel` | Host the tree in Chrome’s side panel. |
-| `storage` | Persist preferences, creation edges, collapse state and the restore snapshot locally. |
+| `storage` | Persist preferences, creation edges, drag overrides, collapse state and restored flags locally. |
 | `webNavigation` | Receive `onCreatedNavigationTarget` so a link-opened tab is remembered as a child **before Chrome clears `openerTabId`**. No host permissions are added and no page content is read. |
 
 Chrome shows the normal “Read your browsing history” warning for the `tabs`/`webNavigation` capabilities. No `<all_urls>`, no content scripts, no telemetry, no remote code. Everything stays on your machine (favicons are fetched by Chrome, not by the extension).
@@ -107,10 +107,10 @@ Chrome shows the normal “Read your browsing history” warning for the `tabs`/
 Requirements: Node.js ≥ 20, Chrome/Chromium 114+, `zip`/`unzip` for packaging.
 
 ```bash
-npm test           # 35 engine unit tests (node:test, zero dependencies)
+npm test           # 41 unit tests: tree engine + session-state codec (node:test, zero dependencies)
 npm run check      # syntax, JSON, manifest refs, i18n parity, permission guard
-npm run build      # dist/tab-tree-v0.1.2.zip (+ sha256)
-npm run smoke      # real Chrome via CDP: nesting, panel DOM, collapse, close, worker restart, screenshots
+npm run build      # dist/tab-tree-v0.1.3.zip (+ sha256)
+npm run smoke      # real Chrome via CDP: nesting, panel DOM, collapse, close, worker wake regression, screenshots
 npm run test:e2e   # acceptance gate: real mouse clicks A→B, A→C, B→D on a live Chrome
 npm run test:panel # real pointer drag (nest / un-nest / cycle) + per-window panel binding
 npm run test:restart # closes and restarts Chrome on the same profile, asserts the tree comes back
@@ -120,15 +120,15 @@ npm run verify:all # check + test + build + all three browser suites
 ```
 
 Latest evidence (macOS arm64, Chrome for Testing 156): `test:e2e` 8/8,
-`test:panel` 11/11, `test:restart` 10/10, `bench` 8/8. On 300 tabs a full
-service-worker rebuild measured 8.5 ms at p95 (500 tabs: 19.9 ms), the virtual
+`test:panel` 11/11, `test:restart` 19/19, `bench` 8/8. On 300 tabs a full
+service-worker rebuild measured 14.4 ms at p95 (500 tabs: 20.6 ms), the virtual
 list keeps <80 rows in the DOM, and scroll/search stay at about one frame. See [verification](docs/verification.md).
 
 No `npm install` is needed — the extension has **zero runtime and build dependencies**. Everything in `extension/` is plain ES modules loaded directly by Chrome.
 
 ### Smoke test note
 
-Branded Chrome 137+ ignores `--load-extension` (a malware mitigation). `npm run smoke` automatically prefers a Playwright-cached **Chrome for Testing** or a Chromium binary; set `CHROME_PATH` to point at one explicitly. The smoke test drives a real browser, creates real link-opened tabs, inspects the generated tree, exercises the side-panel DOM, kills the service worker, and captures the screenshots in `docs/`.
+Branded Chrome 137+ ignores `--load-extension` (a malware mitigation). `npm run smoke` automatically prefers a Playwright-cached **Chrome for Testing** or a Chromium binary; set `CHROME_PATH` to point at one explicitly. The smoke test drives a real browser, creates real link-opened tabs, inspects the generated tree, exercises the side-panel DOM, lets Chrome idle-reclaim the service worker and proves the wake does not replay the restore snapshot, then captures the screenshots in `docs/`.
 
 ### Project layout
 
@@ -138,9 +138,11 @@ extension/
   background.js            service worker: events, build loop, intents, persistence
   sidepanel.html/.css/.js  virtualized tree UI
   lib/tree-engine.js       pure tree algorithms (tested in Node)
+  lib/session-state.js     session storage codec (marker, edges, inferred)
   _locales/{en,zh_CN}       UI strings
   icons/                   16/32/48/128 PNGs
 test/tree-engine.test.js   engine unit tests
+test/session-state.test.js session persistence codec tests
 scripts/
   check.mjs                static checks
   build.mjs                store-shaped zip + sha256

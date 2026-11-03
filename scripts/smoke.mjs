@@ -19,6 +19,10 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import {
+  terminateExtensionWorker,
+  wakeExtensionWorker,
+} from './lib/harness.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const extension = path.join(root, 'extension');
@@ -632,27 +636,232 @@ try {
   );
   check('closing a tab updates the worker tree', true);
 
-  // Kill the service worker, then let the panel re-connect and wake it.
-  await fetch(`${base}/json/close/${swTarget.id}`).catch(() => {});
+  // The restore snapshot is debounced by 900 ms. Give it time to settle so the
+  // wake below has a snapshot that the unfixed code would incorrectly replay.
+  await sleep(1200);
+  const persistedBeforeKill = JSON.parse(
+    await sw.evaluate(`chrome.storage.local.get('restoreSnapshot').then((value) => {
+      const saved = value.restoreSnapshot;
+      return JSON.stringify(saved ? { nodes: saved.nodes.length, withParent: saved.nodes.filter((node) => node.parentId !== null).length } : null);
+    })`),
+  );
+  check(
+    'restore snapshot with parent links is persisted before termination',
+    persistedBeforeKill && persistedBeforeKill.nodes >= 5 && persistedBeforeKill.withParent >= 1,
+    JSON.stringify(persistedBeforeKill),
+  );
+
+  // A manual reparent right before the kill: a plain worker wake must not
+  // replay an older snapshot relation over it.
+  await sw.evaluate(`globalThis.__TAB_TREE_DEBUG__.setParent(${docsNode.tabId}, null)`);
+  await sleep(300);
+
+  const nodeUrls = (snapshot) => new Map(snapshot.nodes.map((node) => [node.tabId, node.url || '']));
+  const scopedRelations = (entries, urls) =>
+    [...entries]
+      .filter(([child, parent]) => {
+        const childUrl = urls.get(child) || '';
+        if (childUrl.startsWith('chrome-extension://')) return false;
+        if (parent === null) return true;
+        return !(urls.get(parent) || '').startsWith('chrome-extension://');
+      })
+      .sort((a, b) => a[0] - b[0]);
+
+  const killedState = JSON.parse(
+    await sw.evaluate(`(async () => {
+      const session = await chrome.storage.session.get(['sessionMarker', 'overrides', 'edges', 'inferred']);
+      const local = await chrome.storage.local.get('restoreStats');
+      const snapshot = globalThis.__TAB_TREE_DEBUG__.snapshot();
+      return JSON.stringify({
+        marker: session.sessionMarker ?? null,
+        overrides: session.overrides ?? [],
+        edges: session.edges ?? [],
+        inferred: session.inferred ?? [],
+        restoreStats: local.restoreStats ?? null,
+        nodes: snapshot.nodes.map((node) => ({
+          id: node.tabId,
+          url: node.url,
+          parentId: node.parentId,
+          depth: node.depth,
+          relation: node.relation,
+          inferred: node.inferred,
+        })),
+      });
+    })()`),
+  );
+  const killedById = new Map(killedState.nodes.map((node) => [node.id, node]));
+  check(
+    'session marker exists before the worker is terminated',
+    Number.isInteger(killedState.marker),
+    String(killedState.marker),
+  );
+  check(
+    'creation relations are edge-derived (not inferred) before termination',
+    killedById.get(seeded.article)?.relation === 'edge' &&
+      killedById.get(seeded.comments)?.relation === 'edge' &&
+      killedById.get(seeded.article)?.inferred === false &&
+      killedById.get(seeded.comments)?.inferred === false,
+    JSON.stringify({
+      article: killedById.get(seeded.article)?.relation,
+      comments: killedById.get(seeded.comments)?.relation,
+    }),
+  );
+  check('no restore statistics exist before the worker is terminated', killedState.restoreStats === null);
+  const killedUrls = nodeUrls({ nodes: killedState.nodes });
+  const killedRelations = {
+    overrides: scopedRelations(killedState.overrides, killedUrls),
+    edges: scopedRelations(killedState.edges, killedUrls),
+  };
+  check(
+    'manual override is persisted before termination',
+    killedState.overrides.some(([child, parent]) => child === docsNode.tabId && parent === null),
+    JSON.stringify(killedRelations.overrides),
+  );
+
+  // Kill the service worker for real: close the panel target first so its port
+  // cannot keep the worker alive, then prove the old target id disappears.
   sw.close();
-  await sleep(600);
-  const revivedWorker = await waitForTarget(
-    base,
-    (target) => target.type === 'service_worker' && target.url.includes('/background.js'),
-    'revived service worker',
-  ).catch(() => null);
-  check('service worker restarts after termination', Boolean(revivedWorker));
-  const revived = await waitFor(
+  const terminated = await terminateExtensionWorker(base, {
+    extensionId,
+    targetId: swTarget.id,
+  }).catch((error) => ({ error: error.message }));
+  if (terminated?.error) throw new Error(`could not terminate the service worker: ${terminated.error}`);
+  check(
+    'service worker target actually disappears after termination',
+    terminated.method === 'idle-reclaim' && terminated.elapsed < 75_000,
+    `${terminated.method} in ${terminated.elapsed} ms`,
+  );
+
+  // Wake it through a new panel document and prove Chrome created a new worker.
+  const revivedWorker = await wakeExtensionWorker(base, {
+    extensionId,
+    oldTargetId: swTarget.id,
+  });
+  const revivedSw = revivedWorker.client;
+  clients.push(revivedSw);
+  revivedSw.on('Runtime.exceptionThrown', (params) =>
+    swErrors.push(params.exceptionDetails?.text || 'worker exception'),
+  );
+  check(
+    'service worker restarts with a different target id',
+    revivedWorker.target.id !== swTarget.id,
+    `${swTarget.id} -> ${revivedWorker.target.id}`,
+  );
+
+  const revivedSnapshot = await waitFor(
     async () => {
-      const raw = await panel
-        .evaluate('JSON.stringify([...document.querySelectorAll(".row")].map((row) => row.querySelector(".title")?.textContent || ""))')
-        .catch(() => null);
-      const titles = JSON.parse(raw || '[]');
-      return titles.some((title) => title.includes('Tree Demo — Root')) ? titles : null;
+      const raw = await revivedSw.evaluate('JSON.stringify(globalThis.__TAB_TREE_DEBUG__?.snapshot?.() || null)');
+      const value = JSON.parse(raw || 'null');
+      return value && value.nodes.some((node) => String(node.url).endsWith('/comments')) ? value : null;
+    },
+    { timeout: 15_000, label: 'snapshot after worker wake' },
+  );
+  const revivedById = new Map(revivedSnapshot.nodes.map((node) => [node.tabId, node]));
+  check(
+    'worker wake does not replay the restore snapshot',
+    revivedSnapshot.restore === null,
+    JSON.stringify(revivedSnapshot.restore),
+  );
+  check(
+    'worker wake leaves no inferred/restore nodes behind',
+    revivedSnapshot.nodes.every((node) => node.inferred !== true && node.relation !== 'restore'),
+    JSON.stringify(
+      revivedSnapshot.nodes
+        .filter((node) => node.inferred === true || node.relation === 'restore')
+        .map((node) => ({ url: node.url, relation: node.relation, inferred: node.inferred })),
+    ),
+  );
+  check(
+    'worker wake preserves the captured creation edges',
+    revivedById.get(seeded.article)?.parentId === seeded.root &&
+      revivedById.get(seeded.comments)?.parentId === seeded.article &&
+      revivedById.get(seeded.article)?.relation === 'edge' &&
+      revivedById.get(seeded.comments)?.relation === 'edge',
+    JSON.stringify({
+      article: revivedById.get(seeded.article)?.relation,
+      comments: revivedById.get(seeded.comments)?.relation,
+    }),
+  );
+  check(
+    'worker wake keeps the manual override',
+    revivedById.get(docsNode.tabId)?.parentId === null &&
+      revivedById.get(docsNode.tabId)?.relation === 'root',
+    JSON.stringify({
+      parent: revivedById.get(docsNode.tabId)?.parentId,
+      relation: revivedById.get(docsNode.tabId)?.relation,
+    }),
+  );
+
+  // The worker writes the merged session state right after load; give that
+  // write a moment to land before comparing it with the pre-kill snapshot.
+  await sleep(500);
+  const revivedSession = JSON.parse(
+    await revivedSw.evaluate(`(async () => {
+      const session = await chrome.storage.session.get(['sessionMarker', 'overrides', 'edges', 'inferred']);
+      const local = await chrome.storage.local.get('restoreStats');
+      return JSON.stringify({
+        marker: session.sessionMarker ?? null,
+        overrides: session.overrides ?? [],
+        edges: session.edges ?? [],
+        inferred: session.inferred ?? [],
+        restoreStats: local.restoreStats ?? null,
+      });
+    })()`),
+  );
+  const revivedUrls = nodeUrls(revivedSnapshot);
+  check(
+    'session marker is unchanged across the worker wake',
+    revivedSession.marker === killedState.marker,
+    `${killedState.marker} -> ${revivedSession.marker}`,
+  );
+  check(
+    'overrides and edges are identical across the worker wake',
+    JSON.stringify(scopedRelations(revivedSession.overrides, revivedUrls)) ===
+      JSON.stringify(killedRelations.overrides) &&
+      JSON.stringify(scopedRelations(revivedSession.edges, revivedUrls)) ===
+        JSON.stringify(killedRelations.edges),
+    JSON.stringify({
+      overrides: scopedRelations(revivedSession.overrides, revivedUrls),
+      edges: scopedRelations(revivedSession.edges, revivedUrls),
+    }),
+  );
+  check('worker wake does not write restore statistics', revivedSession.restoreStats === null);
+
+  // The panel reopened by the wake helper must render the live tree with no
+  // restored badges and no "N links restored" footer.
+  const revivedPanelTarget = await waitForTarget(
+    base,
+    (target) => target.type === 'page' && target.url.endsWith('/sidepanel.html'),
+    'revived panel',
+  );
+  const revivedPanel = await connectTarget(revivedPanelTarget);
+  clients.push(revivedPanel);
+  revivedPanel.on('Runtime.exceptionThrown', (params) =>
+    panelErrors.push(params.exceptionDetails?.exception?.description || params.exceptionDetails?.text || 'panel exception'),
+  );
+  const revivedPanelState = await waitFor(
+    async () => {
+      const raw = await revivedPanel.evaluate(`JSON.stringify({
+        rows: [...document.querySelectorAll('.row')].map((row) => row.querySelector('.title')?.textContent || ''),
+        inferredBadges: document.querySelectorAll('.badge.is-inferred').length,
+        footer: document.getElementById('restoreInfo')?.textContent || ''
+      })`);
+      const value = JSON.parse(raw || '{}');
+      return value.rows?.some((title) => title.includes('Tree Demo — Root')) ? value : null;
     },
     { timeout: 15_000, label: 'panel recovery after worker kill' },
   );
-  check('panel recovers after worker termination', revived.length >= 5, `${revived.length} rows`);
+  check('panel recovers after worker termination', revivedPanelState.rows.length >= 5, `${revivedPanelState.rows.length} rows`);
+  check(
+    'panel shows no restored badges after a plain worker wake',
+    revivedPanelState.inferredBadges === 0,
+    `${revivedPanelState.inferredBadges} badge(s)`,
+  );
+  check(
+    'panel shows no restored-links footer after a plain worker wake',
+    revivedPanelState.footer.trim() === '',
+    JSON.stringify(revivedPanelState.footer),
+  );
 
   await sleep(300);
   check('no panel runtime exceptions', panelErrors.length === 0, panelErrors.join('; '));

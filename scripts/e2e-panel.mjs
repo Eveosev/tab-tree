@@ -159,7 +159,7 @@ async function openPanel(sw, base, extensionId, windowId) {
   const tab = JSON.parse(
     await sw.evaluate(
       `chrome.tabs.create({ url: ${JSON.stringify(
-        `chrome-extension://${extensionId}/sidepanel.html?auto=1`,
+        `chrome-extension://${extensionId}/sidepanel.html`,
       )}, active: true, windowId: ${windowId} }).then((tab) => JSON.stringify({ id: tab.id, windowId: tab.windowId }))`,
     ),
   );
