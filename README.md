@@ -89,7 +89,7 @@ flowchart LR
 - **Restore:** a compact `{url, index, parentId}` snapshot is written to `storage.local`; a marker in `storage.session` distinguishes a real browser restart from a service-worker wake (a live-opener guard additionally avoids overwriting an extension reload with intact relations). After a restart, windows are paired by URL overlap and tabs are aligned with LCS over normalized URLs, then parent links are transferred. Uncertain links are marked and can be re-hung by dragging.
 - **Ordering:** siblings follow `tab.index`; DFS flattening defines native order after an explicit sort.
 
-More detail: [design](docs/design.md) · [research notes](docs/research.md) · [verification report](docs/verification.md).
+More detail: [design](docs/design.md) · [中文设计说明](docs/design.zh.md) · [research notes](docs/research.md) · [verification report](docs/verification.md).
 
 ## Permissions
 
