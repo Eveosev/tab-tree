@@ -1,6 +1,6 @@
 # Tab Tree — technical design
 
-Version: 0.1.0 · Chrome 114+ · MV3 · zero-build ES modules
+Version: 0.1.1 · Chrome 114+ · MV3 · zero-build ES modules
 
 ## 1. Goals and non-goals
 
@@ -19,13 +19,15 @@ Version: 0.1.0 · Chrome 114+ · MV3 · zero-build ES modules
 flowchart LR
   subgraph Chrome["Chrome browser"]
     T["chrome.tabs\n(openerTabId, index, url…)"]
+    N["chrome.webNavigation\nonCreatedNavigationTarget"]
     W["chrome.windows"]
     SW["Service worker\nbackground.js\nsingle source of truth"]
-    S1["chrome.storage.session\noverrides · collapsed"]
+    S1["chrome.storage.session\nedges · overrides · collapsed · marker"]
     S2["chrome.storage.local\nprefs · restore snapshot"]
     P["Side panel\nsidepanel.html + sidepanel.js"]
   end
   T -- "tabs / windows events\n(coalesced 60 ms)" --> SW
+  N -- "creation source + child" --> SW
   W --> SW
   SW -- "tree.changed (full snapshot)" --> P
   P -- "intent messages\n(activate, close, reparent…)" --> SW
@@ -46,10 +48,11 @@ flowchart LR
 | `extension/sidepanel.js` | Virtualized tree, drag/keyboard/search, context menu, settings, demo mode. |
 | `extension/sidepanel.css` | Light/dark design tokens, rows, guides, popovers, drag affordances. |
 | `extension/_locales/{en,zh_CN}` | All UI strings (37 keys each). |
-| `test/tree-engine.test.js` | 29 `node:test` cases covering engine branches. |
+| `test/tree-engine.test.js` | 35 `node:test` cases covering engine branches. |
 | `scripts/check.mjs` | Syntax, JSON, manifest references, i18n usage/parity, permission guard. |
 | `scripts/build.mjs` | Store-shaped zip + sha256. |
-| `scripts/smoke.mjs` | Real Chrome via CDP: opener nesting, panel DOM, collapse, close, worker restart, screenshots. |
+| `scripts/smoke.mjs` | Real Chrome via CDP: creation-edge nesting, panel DOM, collapse, close, worker restart, screenshots. |
+| `scripts/e2e-real-links.mjs` | Acceptance gate with real mouse clicks: A→B, A→C, B→D, background click, opener-less root. |
 
 ## 3. Data model
 
@@ -75,6 +78,7 @@ type Node = {
   descendantCount: number;
   collapsed: boolean;
   openerTabId: number | null;
+  relation: 'manual' | 'restore' | 'edge' | 'opener' | 'orphan' | 'cycle-broken' | 'root';
   orphan: boolean;         // opener no longer exists
   inferred: boolean;       // parent came from session restore
   groupId: number;         // read-only
@@ -82,7 +86,7 @@ type Node = {
 
 type Snapshot = {
   version: 1;
-  revision: string;        // FNV-1a over structural fields
+  revision: string;        // FNV-1a over structure, text content and tab flags
   updatedAt: number;
   focusedWindowId: number | null;
   activeTabId: number | null;
@@ -100,8 +104,11 @@ type Snapshot = {
 Priority per tab:
 
 1. **Explicit override** (`overrides: Map<tabId, parentId | null>`): set by drag-reparent, “make top-level”, or session restore. Applied only if the parent is alive, in the same window, and not the tab itself.
-2. **`tab.openerTabId`** if the opener is alive in the same window.
-3. **Root**: no opener, opener closed, or opener in another window. If an opener id exists but the tab is gone, mark `orphan`.
+2. **Captured creation edge** (`edges: Map<childTabId, parentTabId>`): written at creation time from `webNavigation.onCreatedNavigationTarget`, `tabs.onCreated` (`openerTabId` if present), or the first rebuild that observes a live `openerTabId`. Applied only if both tabs are alive in the same window.
+3. **`tab.openerTabId`** if the opener is alive in the same window (covers background tabs / `window.open` when the edge was not captured).
+4. **Root**: no opener, opener closed, or opener in another window. If an opener id exists but the tab is gone, mark `orphan`.
+
+Why the edge map is required (v0.1.0 bug): Chromium’s `TabStripModel` calls `ForgetAllOpeners()` when a link tab is inserted in the foreground, so `openerTabId` is **transient**. A→B then A→C leaves B with `openerTabId = null`; a debounced rebuild would flatten the tree. The edge is captured synchronously and persisted to `storage.session`, so it survives both the browser clearing the property and MV3 worker termination.
 
 ```
 resolve(tab):
@@ -110,6 +117,8 @@ resolve(tab):
      if p == null: return ROOT
      if alive(p) && sameWindow(p, tab) && p != tab.id: return p
      // dead/foreign override → fall through
+  edge = edges.get(tab.id)
+  if edge is integer && alive(edge) && sameWindow(edge, tab): return edge
   if tab.openerTabId is integer:
      if alive(opener) && sameWindow(opener, tab): return opener
      return ROOT(orphan)
@@ -124,12 +133,16 @@ After resolution:
 
 **Why this matches the product definition**
 
-| User action | Chrome signal | Result |
+| User action | Signal captured | Result |
 | --- | --- | --- |
-| Link / Ctrl-click / middle-click / `window.open` from A | new tab has `openerTabId = A` | child of A, depth +1 |
-| `Ctrl/Cmd+T`, address bar, bookmark, “open in new tab” from the tab strip | no opener | root, sibling of A |
-| Parent A closes | Chrome may reset opener / opener id dies | child promoted to root (data preserved) |
-| User drags B onto C | override `B → C` | B becomes C’s child, locked until B closes |
+| Link / Ctrl-click / middle-click / `window.open` from A | `onCreatedNavigationTarget` (child, source) | child of A, depth +1, survives later `ForgetAllOpeners()` |
+| `chrome.tabs.create({openerTabId})` or a live opener at rebuild time | `tabs.onCreated` / build-time probe | child of A, persisted before Chrome wipes it |
+| `Ctrl/Cmd+T`, address bar, bookmark, “open in new tab” from the tab strip | no edge / no opener | root, sibling of A |
+| Parent A closes | `tabs.onRemoved` computes the pre-close snapshot | direct children promoted one level (A > B > C ⇒ A > C) |
+| User drags B onto C | override `B → C` (beats any captured edge) | B becomes C’s child until the override is cleared |
+| Tab replaced (prerender) | `tabs.onReplaced` | edges and overrides pointing at either side are migrated |
+
+Closing the whole subtree (`closeTab(..., {subtree:true})` or the `closeChildrenWithParent` preference) marks the ids before `chrome.tabs.remove`, so `tabs.onRemoved` does not promote children of a parent that is itself going away.
 
 ## 5. Collapse and visibility
 
@@ -166,13 +179,23 @@ Written 900 ms after a change (debounced) and on `onSuspend`.
 ### 6.2 Matching
 
 ```
-applicable = no live tab has openerTabId
-          && now - savedAt > 15 s
-          && no session overrides
+applicable = session marker absent (= browser restart or an onStartup wake)
+          && no live tab has openerTabId
+          && saved snapshot exists
 ```
 
-- The 15 s window avoids fighting live state right after a worker wake.
-- If Chrome *did* preserve openers, they are strictly better than fingerprints.
+`chrome.storage.session` is wiped when the browser restarts but survives MV3
+worker restarts. `init()` writes a `sessionMarker` the first time it runs in a
+session and only treats a missing marker (or `runtime.onStartup`) as a restart.
+A plain worker wake therefore never overwrites the live tree with an old
+snapshot. The `openerTabId` check remains only as a last-resort guard for
+same-session extension reloads; it is no longer the restart signal (v0.1.0
+used it, and normal foreground opens could false-positive).
+
+- Restore applies the previous tree as `overrides` (marked `restored`), which
+  take priority over any new creation edges captured after startup.
+- If Chrome *did* preserve openers, the live opener is still better for tabs
+  the matcher could not place.
 - Window pairing: greedy max URL-overlap between saved windows and live windows (a window can be reused after restart, so ids are not trustworthy).
 - Tab pairing inside a pair: **longest common subsequence** over `normalizedUrl + pinned` ordered by native index. LCS tolerates tabs closed and reordered while preserving order.
 - Transfer a parent link only if both endpoints matched; otherwise the tab becomes a root with `inferred`/`lost` semantics. Every restored node is flagged `inferred` and rendered with a restore badge.
@@ -229,10 +252,12 @@ Every intent is validated in the worker; the panel cannot inject an arbitrary pa
 | `prefs` | local | `closeChildrenWithParent`, `autoSortNative` | permanent |
 | `restoreSnapshot` | local | compact tree fingerprint | overwritten, debounced |
 | `restoreStats` | local | last restore stats | diagnostic |
+| `edges` | session | `[childTabId, parentTabId][]` captured at creation | browser session / worker restarts |
 | `overrides` | session | `[tabId, parentId \| null][]` | browser session / worker restarts |
 | `collapsed` | session | `tabId[]` | browser session / worker restarts |
+| `sessionMarker` | session | timestamp written on first init | browser session; its absence means “new browser session” |
 
-Wake path: module loads → `init()` loads storage → queries tabs/windows → prunes dead overrides → maybe restores → `buildNow()` → port clients get a snapshot. Event listeners are registered synchronously, so no early events are lost.
+Wake path: module loads → `init()` loads storage → detects the session marker → queries tabs/windows → prunes dead edges/overrides → maybe restores → `buildNow()` → port clients get a snapshot. Event listeners are registered synchronously, so no early events are lost. Creation edges are written immediately (not debounced) so a worker death right after a click cannot lose the relation.
 
 Change detection uses `revision`; unchanged rebuilds do not broadcast or persist.
 
@@ -271,8 +296,8 @@ Change detection uses `revision`; unchanged rebuilds do not broadcast or persist
 | --- | --- |
 | Worker killed | Panel port disconnects → reconnect loop (450 ms). Connect wakes worker; `init()` rebuilds from tabs; panel gets `tree.changed`. |
 | Rapid tab storm (open 50 links) | `scheduleBuild` debounce 60 ms; `building` flag + `buildAgain` coalescing; one broadcast per settled state. |
-| Tab replaced (prerender) | `tabs.onReplaced` migrates overrides/collapse to the new id. |
-| Parent closed | Overrides pointing at it are pruned; children fall back to opener (likely dead) → promoted roots with orphan/inferred marker. |
+| Tab replaced (prerender) | `tabs.onReplaced` migrates creation edges, overrides, collapse and inferred flags to the new id (both as child and as parent). |
+| Parent closed | `tabs.onRemoved` reads the pre-close snapshot and promotes the parent’s direct children one level; the promotion is persisted as a creation edge because the old opener id is dead. |
 | Duplicate/reordered session tabs | LCS alignment remains deterministic; low-confidence links can be fixed by drag. |
 | Corrupt override cycle | Cycle guard roots the offending node; every tab stays visible. |
 | Panel opened in a normal tab (dev) | Same document works; it shows up as a tab in its own tree. |
@@ -280,8 +305,9 @@ Change detection uses `revision`; unchanged rebuilds do not broadcast or persist
 
 ## 12. Security & privacy
 
-- No host permissions, no content scripts, no remote code, no `eval`, no network calls.
-- URLs/titles are processed in memory and stored locally only; nothing leaves the browser.
+- No host permissions, no content scripts, no remote code, no `eval`, no network calls made by extension code.
+- `webNavigation` is used only for `onCreatedNavigationTarget` (tab-creation source); no URL/frame history is read or stored beyond the tab’s own title/URL already available through `tabs`.
+- URLs/titles are processed in memory and stored locally only; nothing leaves the browser. Favicons are loaded by Chrome, not proxied by the extension.
 - All rendered text uses `textContent`; only constant SVG strings use `innerHTML`.
 - Intents are validated server-side (cycle/cross-window checks); the panel cannot close arbitrary ids outside the snapshot? It can send any tabId, and `tabs.remove` would apply — same as any `tabs`-permission extension. The panel is extension-origin only.
 - Extension pages use the default MV3 CSP (`script-src 'self'`); the only inline handlers are none.
@@ -290,10 +316,11 @@ Change detection uses `revision`; unchanged rebuilds do not broadcast or persist
 
 | Layer | Tool | Coverage |
 | --- | --- | --- |
-| Engine | `node --test` | 29 cases: inference, orphan, cross-window, overrides, cycles, DFS ordering, descendant count, collapse/search, reparent validation, native order, restore (dead tab, sealed windows, duplicates, fresh/openers), serialization, pruning, hash, depth cap, prefs |
+| Engine | `node --test` | 35 cases: inference (opener/edge/override priority), orphan, cross-window, cycles, DFS ordering, descendant count, collapse/search, reparent validation, native order, restore (dead tab, sealed windows, duplicates, restart marker), edge pruning/promotion, serialization, content-aware revision hash, depth cap, prefs |
 | Static | `scripts/check.mjs` | every `.js` parses, JSON valid, manifest files exist, i18n key parity and usage, version consistency, no `<all_urls>` |
-| Build | `scripts/build.mjs` | zip `dist/tab-tree-v0.1.0.zip`, print sha256/size |
-| E2E | `scripts/smoke.mjs` | real Chrome for Testing: load extension, real link clicks create real `openerTabId` chains, DOM indentation, collapse/expand, close, worker termination recovery, light/dark screenshots |
+| Build | `scripts/build.mjs` | zip `dist/tab-tree-v0.1.1.zip`, print sha256/size |
+| E2E | `scripts/smoke.mjs` | real Chrome for Testing: load extension, creation-edge nesting, panel indentation, collapse/expand, close, worker termination recovery, light/dark screenshots |
+| Acceptance | `scripts/e2e-real-links.mjs` | real mouse events in Chrome for Testing: A→B, A→C, B→D, Cmd/Ctrl+click background child, opener-less root; asserts snapshot depths and panel indentation (8/8) |
 | Manual | chrome://extensions | load unpacked, open side panel, drag, keyboard, multi-window |
 
 **Why Chrome for Testing:** branded Chrome 137+ ignores `--load-extension` (malware mitigation), so automated e2e uses Chrome for Testing / Chromium (`CHROME_PATH` override supported).
@@ -302,13 +329,13 @@ Change detection uses `revision`; unchanged rebuilds do not broadcast or persist
 
 | AC | Implementation | Evidence |
 | --- | --- | --- |
-| Link-opened tab is one level deep, `data-parent-id` = A | `openerTabId`, `buildSnapshot`, `createRow` | unit tests; smoke asserts depth/parent ids + DOM |
+| Link-opened tab is one level deep, `data-parent-id` = A, and stays a child after a second foreground tab | `webNavigation` edge capture, `buildSnapshot`, `createRow` | `npm run test:e2e` 8/8 real mouse clicks; unit tests for edge priority; smoke DOM assertions |
 | Address-bar tab is a root sibling | no opener → root | unit tests; smoke `/other` |
 | 3-level nesting, collapse persists | DFS + collapsed set | unit tests; smoke collapse/expand |
-| Parent close promotes children / optional subtree close | `closeTab`, `getDescendantIds` | unit tests |
+| Parent close promotes children one level / optional subtree close | `closeTab`, `planOrphanPromotion`, `getDescendantIds` | unit test + real-browser e2e (`closing B promotes D to a depth-1 child of A`) |
 | Drag reparent + native DFS order | pointer drag, `canReparent`, `reorderNative` | engine tests; manual (headless drag not simulated) |
 | Worker death → recover <5 s | port reconnect + rebuild | smoke kills worker, waits for revival |
-| Browser restart restore ≥90% | LCS + window pairing | unit tests; manual checklist |
+| Browser restart restore uses a real restart marker, not a live-opener proxy | `storage.session` marker + `onStartup` | unit tests for `matchRestoreSnapshot`; manual restart checklist (not automated) |
 | Multi-window forests | windowId partitioning | unit tests |
 | 500 tabs performance | virtualization + coalescing | design; manual target (<300 ms first paint) |
 | No `<all_urls>`/remote code; loadable | manifest check | `npm run check`, `npm run build`, smoke load |
@@ -317,20 +344,21 @@ Change detection uses `revision`; unchanged rebuilds do not broadcast or persist
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| `openerTabId` missing for some sources | wrong nesting | manual drag override; orphan marker; document limitations |
+| `openerTabId` cleared by Chrome for older foreground tabs | wrong nesting | captured creation edges (`webNavigation` + `tabs.onCreated` + build probe), persisted to `storage.session` |
+| `webNavigation` permission warning | install friction | no host permissions, no content read, documented purpose |
 | Restore mismatch with duplicate URLs | wrong links after restart | LCS order matching + inferred badge + manual reparent |
 | Native tab strip can’t become a tree | expectation gap | README + UI clearly frame the panel; “sort strip by tree” helps |
 | Service worker termination | stale UI | reconnect loop; idempotent rebuild; session persistence |
 | Large windows | jank | 32 px fixed rows, virtualization, 60 ms coalescing, no per-row listeners |
 | Chrome <114 | no side panel | `minimum_chrome_version`; popup fallback planned |
 | Drag UX in narrow panel | accidental reparents | 6 px threshold, clear highlight, root zone, click suppression |
-| Permission warning | install friction | minimal permissions, privacy section, no network |
+| Permission warning | install friction | minimal permissions, privacy section, no extension network calls |
 
 ## 16. Roadmap
 
 - v0.2: sibling reordering by drag, undo for close, popup fallback for <114, tab-group filters.
 - v0.3: named workspaces/snapshots, export/import JSON, search across windows, fuzzy matching.
-- Later: optional `webNavigation`/`referrer` fallback behind an optional permission, Firefox adapter.
+- Later: Firefox adapter; optional sibling ordering; saved workspaces.
 
 ## 17. Performance notes
 

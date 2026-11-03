@@ -75,6 +75,8 @@ const state = {
   windowId: null,
   /** @type {number|null} */
   manualWindowId: null,
+  /** Window that hosts this side panel; the panel follows it, not focus. */
+  hostWindowId: null,
   query: '',
   selectedTabId: null,
   rows: [],
@@ -168,6 +170,19 @@ function isWindowAlive(windowId) {
 /* Connection                                                                 */
 /* -------------------------------------------------------------------------- */
 
+async function detectHostWindow() {
+  if (!isExtension || !chrome.windows?.getCurrent) return;
+  try {
+    const win = await chrome.windows.getCurrent();
+    if (!Number.isInteger(win?.id)) return;
+    if (state.hostWindowId === win.id) return;
+    state.hostWindowId = win.id;
+    if (state.snapshot) setSnapshot(state.snapshot);
+  } catch {
+    // Detached panel / window closing: keep the last known window.
+  }
+}
+
 function connect() {
   if (!isExtension) return;
   try {
@@ -238,7 +253,9 @@ function setSnapshot(snapshot) {
   const windows = snapshot.windows || [];
   const preferred = state.manualWindowId && windows.some((w) => w.id === state.manualWindowId)
     ? state.manualWindowId
-    : windows.find((w) => w.focused)?.id ?? windows[0]?.id ?? null;
+    : (state.hostWindowId && windows.some((w) => w.id === state.hostWindowId)
+        ? state.hostWindowId
+        : windows.find((w) => w.focused)?.id ?? windows[0]?.id ?? null);
   state.windowId = preferred;
 
   if (!state.selectedTabId || !snapshot.nodes.some((n) => n.tabId === state.selectedTabId)) {
@@ -1165,6 +1182,7 @@ async function mockAction(type, payload = {}) {
 applyI18n();
 updatePrefControls();
 if (isExtension) {
+  detectHostWindow();
   connect();
   el.tree.focus();
 } else {

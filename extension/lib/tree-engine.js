@@ -11,8 +11,13 @@
  * - A tab's parent is, in priority order:
  *     1. an explicit user/restore override (only if the parent is alive, in the
  *        same window, and cannot create a cycle),
- *     2. `tab.openerTabId` (Chrome's authoritative link-opener signal),
- *     3. none -> the tab is a root (address bar, Ctrl+T, bookmark, restart).
+ *     2. a captured creation edge: the tab that was the navigation source when
+ *        this tab was created. Chrome clears `openerTabId` as soon as a second
+ *        foreground tab is opened, so the edge is captured from
+ *        `webNavigation.onCreatedNavigationTarget` / `tabs.onCreated` and
+ *        persisted for the lifetime of the browser session,
+ *     3. `tab.openerTabId` (still useful for background tabs and `window.open`),
+ *     4. none -> the tab is a root (address bar, Ctrl+T, bookmark, restart).
  * - Siblings are ordered by Chrome's `tab.index` so the tree tracks the native
  *   tab strip. Collapsed state only hides descendants; it never changes order.
  */
@@ -70,6 +75,7 @@ export const DEFAULT_PREFS = Object.freeze({
  * @property {boolean} hasChildren
  * @property {number} descendantCount
  * @property {number|null} openerTabId
+ * @property {'manual'|'restore'|'edge'|'opener'|'orphan'|'cycle-broken'|'root'} relation
  * @property {boolean} orphan     opener was closed / not found
  * @property {boolean} inferred   parent rebuilt from a saved session
  * @property {number} groupId
@@ -140,6 +146,7 @@ function baseNode(tab) {
     hasChildren: false,
     descendantCount: 0,
     openerTabId: Number.isInteger(tab.openerTabId) ? tab.openerTabId : null,
+    relation: 'root',
     orphan: false,
     inferred: false,
     groupId: typeof tab.groupId === 'number' ? tab.groupId : -1,
@@ -152,6 +159,7 @@ function baseNode(tab) {
  * @param {Object} input
  * @param {TabLike[]} input.tabs
  * @param {Map<number, number|null>} [input.overrides]  tabId -> parentId (null = force root)
+ * @param {Map<number, number>} [input.edges]  childTabId -> parentTabId captured when created
  * @param {Set<number>} [input.collapsed]
  * @param {Set<number>} [input.inferred]  tabIds whose parent came from restore
  * @param {Object} [input.prefs]
@@ -162,6 +170,7 @@ function baseNode(tab) {
 export function buildSnapshot({
   tabs,
   overrides = new Map(),
+  edges = new Map(),
   collapsed = new Set(),
   inferred = new Set(),
   prefs = DEFAULT_PREFS,
@@ -200,7 +209,14 @@ export function buildSnapshot({
       if (candidate && candidate.windowId === tab.windowId && candidate.id !== tab.id) {
         return { parentId: override, source: inferred.has(tab.id) ? 'restore' : 'manual' };
       }
-      // An override to a dead/foreign tab degrades to the opener heuristic.
+      // An override to a dead/foreign tab degrades to the captured edge/opener.
+    }
+    const captured = edges.get(tab.id);
+    if (Number.isInteger(captured) && captured !== tab.id) {
+      const source = validTabs.get(captured);
+      if (source && source.windowId === tab.windowId) {
+        return { parentId: captured, source: 'edge' };
+      }
     }
     if (Number.isInteger(tab.openerTabId)) {
       const opener = validTabs.get(tab.openerTabId);
@@ -241,6 +257,7 @@ export function buildSnapshot({
     const node = baseNode(tab);
     node.parentId = parentById.get(tab.id) ?? null;
     const source = relationSource.get(tab.id);
+    node.relation = source;
     node.orphan = source === 'orphan';
     node.inferred = source === 'restore';
     nodeById.set(tab.id, node);
@@ -325,15 +342,19 @@ export function buildSnapshot({
   const activeTabId = activeWindow ? activeWindow.activeTabId : null;
 
   const normalizedPrefs = { ...DEFAULT_PREFS, ...(prefs || {}) };
+  // Hash the displayed content, not just its length: two tabs with equal-length
+  // titles must still trigger a panel update when their text changes.
   const revision = hashString(
     nodes
       .map(
         (node) =>
           `${node.tabId}:${node.parentId ?? '-'}:${node.depth}:${node.index}:${node.collapsed ? 1 : 0}:${
             node.active ? 1 : 0
-          }:${node.inferred ? 1 : 0}:${node.orphan ? 1 : 0}:${node.title.length}:${node.url.length}:${
-            node.favIconUrl.length
-          }`,
+          }:${node.inferred ? 1 : 0}:${node.orphan ? 1 : 0}:${node.pinned ? 1 : 0}:${
+            node.audible ? 1 : 0
+          }:${node.muted ? 1 : 0}:${node.discarded ? 1 : 0}:${node.relation}:${hashString(node.title)}:${
+            hashString(node.url)
+          }:${hashString(node.favIconUrl)}`,
       )
       .join('|') +
       `|${focusedWindowId ?? '-'}|${windows.map((w) => `${w.id}:${w.tabCount}`).join(',')}`,
@@ -500,7 +521,12 @@ export function lcsPairs(a, b) {
  *
  * @param {Object|null} saved
  * @param {TabLike[]} tabs
- * @param {{now?: number}} [options]
+ * @param {{now?: number, restart?: boolean, minAgeMs?: number}} [options]
+ *   `restart` is supplied by the service worker when `chrome.storage.session`
+ *   proves this is a fresh browser session (session storage is wiped on
+ *   restart). It is the authoritative signal; the age check only protects
+ *   against applying a snapshot captured moments ago during an extension
+ *   reload/update in the same browser session.
  * @returns {{
  *   applicable: boolean,
  *   overrides: Map<number, number|null>,
@@ -522,11 +548,9 @@ export function matchRestoreSnapshot(saved, tabs, options = {}) {
   const liveTabs = tabs.filter((tab) => tab && Number.isInteger(tab.id) && Number.isInteger(tab.windowId));
   if (oldNodes.length === 0 || liveTabs.length === 0) return empty;
 
-  // Browser restart heuristic: a live tab with an opener means Chrome still
-  // knows the relation, so reopening a stale snapshot would only add noise.
-  const hasLiveOpeners = liveTabs.some((tab) => Number.isInteger(tab.openerTabId));
   const ageMs = options.now && saved.savedAt ? options.now - saved.savedAt : Infinity;
-  const applicable = !hasLiveOpeners && ageMs > 15_000;
+  const minAgeMs = Number.isFinite(options.minAgeMs) ? options.minAgeMs : 15_000;
+  const applicable = options.restart === true || ageMs > minAgeMs;
   if (!applicable) return { ...empty, stats: { ...empty.stats, oldNodes: oldNodes.length, newTabs: liveTabs.length, savedAt: saved.savedAt ?? null } };
 
   const oldByWindow = new Map();
@@ -659,6 +683,53 @@ export function pruneOverrides(overrides, liveIds) {
     if (parent !== null && parent !== undefined && !liveIds.has(parent)) overrides.delete(key);
   }
   return overrides;
+}
+
+/**
+ * Drop captured creation edges whose endpoints were closed, moved to another
+ * window, or point at themselves. Mutates and returns the map.
+ *
+ * @param {Map<number, number>} edges
+ * @param {TabLike[]} tabs
+ */
+export function pruneEdges(edges, tabs) {
+  const live = new Map();
+  for (const tab of tabs) {
+    if (tab && Number.isInteger(tab.id) && Number.isInteger(tab.windowId)) live.set(tab.id, tab);
+  }
+  for (const [childId, parentId] of [...edges.entries()]) {
+    const child = live.get(childId);
+    const parent = live.get(parentId);
+    if (
+      !child ||
+      !parent ||
+      childId === parentId ||
+      child.windowId !== parent.windowId ||
+      !Number.isInteger(parentId)
+    ) {
+      edges.delete(childId);
+    }
+  }
+  return edges;
+}
+
+/**
+ * Children that become orphans when `removedTabId` closes.
+ *
+ * Product policy (when the user is not explicitly closing the subtree) is to
+ * promote the direct children one level, i.e. to the removed tab's parent, so
+ * A > B > C becomes A > C instead of A > C > D losing a level.
+ *
+ * @param {TreeNode[]} nodes
+ * @param {number} removedTabId
+ * @returns {{grandparentId: number|null, children: number[]}}
+ */
+export function planOrphanPromotion(nodes, removedTabId) {
+  const node = nodes.find((item) => item.tabId === removedTabId);
+  return {
+    grandparentId: node ? node.parentId : null,
+    children: nodes.filter((item) => item.parentId === removedTabId).map((item) => item.tabId),
+  };
 }
 
 /**

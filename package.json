@@ -1,6 +1,6 @@
 {
   "name": "tab-tree",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Tree-style tab management for Chrome's side panel (MV3, zero build step).",
@@ -18,6 +18,8 @@
     "check": "node scripts/check.mjs",
     "build": "node scripts/build.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "verify": "npm run check && npm test && npm run build"
+    "test:e2e": "node scripts/e2e-real-links.mjs",
+    "verify": "npm run check && npm test && npm run build",
+    "verify:all": "npm run check && npm test && npm run build && npm run test:e2e && npm run smoke"
   }
 }

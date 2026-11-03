@@ -1,5 +1,7 @@
 # Tab Tree
 
+[![CI](https://github.com/Eveosev/tab-tree/actions/workflows/ci.yml/badge.svg)](https://github.com/Eveosev/tab-tree/actions/workflows/ci.yml)
+
 **Tree-style tab management for Chrome’s side panel.** Tabs you open from a link become children of the page that opened them; tabs you open independently stay top-level. No account, no network, no build step.
 
 ![Tab Tree side panel (light)](docs/screenshot-light.png#gh-light-mode-only)
@@ -7,11 +9,13 @@
 
 ## Why
 
-Chrome’s tab strip is flat. Research branches (docs → API → example → issue) turn into an unreadable row of lookalike tabs. Chrome exposes no API to restyle the native strip, but it does expose the signal that matters: **`chrome.tabs.Tab.openerTabId`**.
+Chrome’s tab strip is flat. Research branches (docs → API → example → issue) turn into an unreadable row of lookalike tabs. Chrome exposes no API to restyle the native strip, but it does expose the signal that matters: **which page opened a new tab**.
 
-- Open a link from **A** → Chrome sets `openerTabId = A` → the new tab renders indented under **A**.
+- Open a link from **A** → the new tab renders indented under **A**.
 - Press **Ctrl/Cmd+T**, type a URL, open a bookmark → no opener → the tab is a **root**, a sibling of A.
 - A→B→C nesting is supported to any practical depth.
+
+The relation is captured from `chrome.webNavigation.onCreatedNavigationTarget` (and `tabs.onCreated`/live `openerTabId` as fallbacks) the moment the tab is created, then persisted for the browser session. This matters because Chrome **clears `openerTabId`** as soon as another foreground tab is inserted: relying on the live property alone would flatten A→B→C after the second child opens. Captured edges are what make the tree stable.
 
 The tree lives in the native **side panel** (Chrome 114+), next to the page you are browsing. The toolbar button opens it.
 
@@ -19,7 +23,7 @@ The tree lives in the native **side panel** (Chrome 114+), next to the page you 
 
 | | |
 | --- | --- |
-| 🌳 **Automatic tree** | Built from `openerTabId`; dead openers are promoted to roots and marked. |
+| 🌳 **Automatic tree** | Link-opened tabs nest under their opener via captured creation edges; dead relations are promoted and marked. |
 | 📏 **Indentation** | Exactly 16 px per level, with vertical guide lines. |
 | ↔️ **Drag to reparent** | Drop on a row to make it a child, drop on the bottom zone to make it top-level. Cycles and cross-window parents are rejected. |
 | ⌨️ **Keyboard-first** | `↑/↓` move, `←` collapse/parent, `→` expand/child, `Enter` activate, `Delete` close, `/` search. |
@@ -39,7 +43,7 @@ The tree lives in the native **side panel** (Chrome 114+), next to the page you 
 3. **Load unpacked** → select the `extension/` directory.
 4. Click the Tab Tree toolbar icon (or the side-panel button) to open the panel.
 
-A packaged build is also available: `npm run build` creates `dist/tab-tree-v0.1.0.zip`.
+A packaged build is also available: `npm run build` creates `dist/tab-tree-v0.1.1.zip`.
 
 > Chrome 137+ ignores `--load-extension` on branded builds; use Chrome for Testing/Chromium for automated runs (see *Development*).
 
@@ -71,17 +75,18 @@ A packaged build is also available: `npm run build` creates `dist/tab-tree-v0.1.
 
 ```mermaid
 flowchart LR
-  T["chrome.tabs\nopenerTabId · index · windowId"] --> SW["Service worker\nsingle source of truth"]
+  T["chrome.tabs\nindex · windowId · openerTabId"] --> SW["Service worker\nsingle source of truth"]
+  N["webNavigation\nonCreatedNavigationTarget"] --> SW
   W["chrome.windows"] --> SW
-  SW --> S1["storage.session\noverrides · collapsed"]
+  SW --> S1["storage.session\nedges · overrides · collapsed"]
   SW --> S2["storage.local\nprefs · restore snapshot"]
   SW -- "tree.changed (snapshot)" --> P["Side panel\nvirtualized tree"]
   P -- "intents: activate · close\nreparent · collapse · reorder" --> SW
 ```
 
-- **Parent inference:** explicit override → live `openerTabId` (same window) → root. A dead opener is marked `orphan`; an override chain that would cycle is broken defensively.
+- **Parent inference:** explicit override → captured creation edge → live `openerTabId` → root. A dead opener is marked `orphan`; an override chain that would cycle is broken defensively. Closing a parent promotes its direct children one level (A > B > C becomes A > C); “close children with parent” is available in Settings.
 - **Rebuild on wake:** MV3 workers are disposable. Every wake re-queries tabs and recomputes the forest, so no event can be permanently lost.
-- **Restore:** a compact `{url, index, parentId}` snapshot is written to `storage.local`; after a restart, windows are paired by URL overlap and tabs are aligned with LCS over normalized URLs, then parent links are transferred. Uncertain links are marked and can be re-hung by dragging.
+- **Restore:** a compact `{url, index, parentId}` snapshot is written to `storage.local`; a marker in `storage.session` distinguishes a real browser restart from a service-worker wake (a live-opener guard additionally avoids overwriting an extension reload with intact relations). After a restart, windows are paired by URL overlap and tabs are aligned with LCS over normalized URLs, then parent links are transferred. Uncertain links are marked and can be re-hung by dragging.
 - **Ordering:** siblings follow `tab.index`; DFS flattening defines native order after an explicit sort.
 
 More detail: [design](docs/design.md) · [research notes](docs/research.md) · [verification report](docs/verification.md).
@@ -92,19 +97,21 @@ More detail: [design](docs/design.md) · [research notes](docs/research.md) · [
 | --- | --- |
 | `tabs` | Read tab metadata (`openerTabId`, title, URL, favicon), activate/close/move tabs on user action. |
 | `sidePanel` | Host the tree in Chrome’s side panel. |
-| `storage` | Persist preferences, collapse state and the restore snapshot locally. |
+| `storage` | Persist preferences, creation edges, collapse state and the restore snapshot locally. |
+| `webNavigation` | Receive `onCreatedNavigationTarget` so a link-opened tab is remembered as a child **before Chrome clears `openerTabId`**. No host permissions are added and no page content is read. |
 
-No `<all_urls>`, no content scripts, no network requests, no remote code, no telemetry. Everything stays on your machine.
+Chrome shows the normal “Read your browsing history” warning for the `tabs`/`webNavigation` capabilities. No `<all_urls>`, no content scripts, no telemetry, no remote code. Everything stays on your machine (favicons are fetched by Chrome, not by the extension).
 
 ## Development
 
 Requirements: Node.js ≥ 20, Chrome/Chromium 114+, `zip`/`unzip` for packaging.
 
 ```bash
-npm test          # 29 engine unit tests (node:test, zero dependencies)
+npm test          # 35 engine unit tests (node:test, zero dependencies)
 npm run check     # syntax, JSON, manifest refs, i18n parity, permission guard
-npm run build     # dist/tab-tree-v0.1.0.zip (+ sha256)
+npm run build     # dist/tab-tree-v0.1.1.zip (+ sha256)
 npm run smoke     # real Chrome via CDP: nesting, panel DOM, collapse, close, worker restart, screenshots
+npm run test:e2e  # acceptance gate: real mouse clicks A→B, A→C, B→D on a live Chrome
 npm run verify    # check + test + build
 ```
 
@@ -118,22 +125,23 @@ Branded Chrome 137+ ignores `--load-extension` (a malware mitigation). `npm run 
 
 ```
 extension/
-  manifest.json            MV3 manifest (114+, tabs/sidePanel/storage)
+  manifest.json            MV3 manifest (114+, tabs/sidePanel/storage/webNavigation)
   background.js            service worker: events, build loop, intents, persistence
   sidepanel.html/.css/.js  virtualized tree UI
   lib/tree-engine.js       pure tree algorithms (tested in Node)
   _locales/{en,zh_CN}       UI strings
   icons/                   16/32/48/128 PNGs
 test/tree-engine.test.js   engine unit tests
-scripts/{check,build,smoke}.mjs
+scripts/{check,build,smoke,e2e-real-links}.mjs
 docs/research.md           product research, competitors, ADRs
 docs/design.md             architecture, algorithms, protocol, risks
 ```
 
 ## Known limitations
 
-- Chrome provides no way to restyle the native tab strip, so the tree is a side panel, not a replacement strip.
-- `openerTabId` can be absent (some extension-initiated opens, restored sessions); those tabs become roots until you drag them.
+- Chrome provides no way to restyle the native tab strip, so the tree is a side panel, not a replacement strip. Chrome also decides whether the side panel sits on the left or right (`chrome://settings/appearance` → side panel position); an extension cannot force it to the left.
+- Creation edges are session-scoped, like Chrome’s own tab ids. After a browser restart the tree is reconstructed by the heuristic matcher and marked as inferred.
+- Tabs that were already open before the extension was installed have no captured edge and start as roots until you drag them.
 - Session restore is heuristic: duplicate URLs and heavy reordering can produce an occasional wrong link. Restored links are badged and can be fixed in one drag.
 - Collapse state is session-scoped (tab ids do not survive a browser restart).
 - Drag currently changes parent/child, not sibling order.

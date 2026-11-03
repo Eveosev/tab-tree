@@ -336,6 +336,12 @@ try {
   const extensionId = new URL(swTarget.url).host;
   const swErrors = [];
   sw.on('Runtime.exceptionThrown', (params) => swErrors.push(params.exceptionDetails?.text || 'worker exception'));
+  if (process.env.DEBUG_SW) {
+    sw.on('Runtime.consoleAPICalled', (params) => {
+      const text = (params.args || []).map((arg) => arg.value ?? arg.description ?? '').join(' ');
+      console.log('  [sw]', text);
+    });
+  }
 
   const rootTarget = await newTab(base, `${appUrl}/`);
   const rootClient = await connectTarget(rootTarget);
@@ -368,19 +374,15 @@ try {
   check('seeded root/docs/article/comments tabs', Boolean(seeded?.root), JSON.stringify(seeded));
   if (!seeded?.root) throw new Error('could not seed the tab chain');
 
-  // Headless Chrome/CFT only records `openerTabId` for the most recently opened
-  // synthetic tab in this environment (verified without any extension too), so
-  // the three-level chain is created through the exact override path that the
-  // drag-and-drop UI uses. Automatic opener inference is still exercised by the
-  // real link-opened /other-child tab below, and covered in depth by unit tests.
+  // No debug/override seeding here: `tabs.onCreated` must capture the
+  // `openerTabId` of each created tab before Chrome clears it. The real
+  // foreground-click case (two children, grandchild depth 2) lives in
+  // scripts/e2e-real-links.mjs.
   const reparented = JSON.parse(
     await sw.evaluate(`(async () => {
-      const debug = globalThis.__TAB_TREE_DEBUG__;
-      await debug.setParent(${seeded.docs}, ${seeded.root});
-      await debug.setParent(${seeded.article}, ${seeded.root});
-      await debug.setParent(${seeded.comments}, ${seeded.article});
+      await new Promise((resolve) => setTimeout(resolve, 300));
       return JSON.stringify(
-        debug.snapshot().nodes.map((node) => ({
+        globalThis.__TAB_TREE_DEBUG__.snapshot().nodes.map((node) => ({
           id: node.tabId,
           parent: node.parentId,
           depth: node.depth,
@@ -390,7 +392,7 @@ try {
   );
   const reparentedById = new Map(reparented.map((node) => [node.id, node]));
   check(
-    'override path builds a three-level chain',
+    'captured creation edges build a three-level chain',
     reparentedById.get(seeded.article)?.parent === seeded.root &&
       reparentedById.get(seeded.article)?.depth === 1 &&
       reparentedById.get(seeded.comments)?.parent === seeded.article &&
@@ -418,7 +420,17 @@ try {
       return complete && nested ? value : null;
     },
     { timeout: 20_000, label: 'opener tree' },
-  );
+  ).catch(async (error) => {
+    const dump = await sw.evaluate(
+      'JSON.stringify(globalThis.__TAB_TREE_DEBUG__?.snapshot?.() || null)',
+    ).catch(() => '{}');
+    console.error('opener-tree timeout snapshot:', dump);
+    const tabs = await sw.evaluate(
+      'chrome.tabs.query({}).then((ts) => JSON.stringify(ts.map((t) => ({ id: t.id, url: t.url, opener: t.openerTabId ?? null }))))',
+    ).catch(() => '[]');
+    console.error('opener-tree timeout raw tabs:', tabs);
+    throw error;
+  });
 
   if (process.env.DEBUG_TREE) {
     console.log('seeded:', seeded);
@@ -447,7 +459,11 @@ try {
   const manifest = JSON.parse(await sw.evaluate('JSON.stringify(chrome.runtime.getManifest())'));
   check('extension service worker is running', Boolean(extensionId), extensionId);
   check('manifest v3 + side panel', manifest.manifest_version === 3 && Boolean(manifest.side_panel), manifest.side_panel?.default_path);
-  check('permissions are minimal', JSON.stringify(manifest.permissions) === '["tabs","sidePanel","storage"]', JSON.stringify(manifest.permissions));
+  check(
+    'permissions are minimal (tabs, sidePanel, storage, webNavigation)',
+    JSON.stringify(manifest.permissions) === '["tabs","sidePanel","storage","webNavigation"]',
+    JSON.stringify(manifest.permissions),
+  );
 
   const byPath = (pathname) =>
     snapshot.nodes.find((node) => {

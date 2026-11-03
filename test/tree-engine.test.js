@@ -13,6 +13,8 @@ import {
   lcsPairs,
   matchRestoreSnapshot,
   normalizeUrl,
+  planOrphanPromotion,
+  pruneEdges,
   pruneOverrides,
   serializeRestoreSnapshot,
 } from '../extension/lib/tree-engine.js';
@@ -145,6 +147,110 @@ test('an invalid override falls back to the opener heuristic', () => {
   });
 
   assert.equal(byId(snapshot, 2).parentId, 1);
+});
+
+test('a persisted creation edge survives Chrome clearing openerTabId', () => {
+  // Chrome wipes openerTabId when a second foreground tab opens, but the edge
+  // captured at creation time still says "B was opened from A".
+  const snapshot = buildSnapshot({
+    tabs: [
+      tab({ id: 1, index: 0, title: 'A' }),
+      tab({ id: 2, index: 1, title: 'B' }), // openerTabId already cleared
+      tab({ id: 3, index: 2, title: 'C' }),
+    ],
+    edges: new Map([
+      [2, 1],
+      [3, 1],
+    ]),
+    focusedWindowId: 1,
+  });
+
+  assert.equal(byId(snapshot, 2).parentId, 1);
+  assert.equal(byId(snapshot, 2).relation, 'edge');
+  assert.equal(byId(snapshot, 3).parentId, 1);
+  assert.equal(byId(snapshot, 1).childIds.length, 2);
+});
+
+test('manual override beats a creation edge', () => {
+  const snapshot = buildSnapshot({
+    tabs: [tab({ id: 1 }), tab({ id: 2, index: 1 }), tab({ id: 3, index: 2 })],
+    overrides: new Map([[2, 3], [3, null]]),
+    edges: new Map([[2, 1]]),
+    focusedWindowId: 1,
+  });
+
+  assert.equal(byId(snapshot, 2).parentId, 3);
+  assert.equal(byId(snapshot, 2).relation, 'manual');
+});
+
+test('a creation edge to a closed/foreign tab is ignored', () => {
+  const crossWindow = buildSnapshot({
+    tabs: [
+      tab({ id: 1, windowId: 1, index: 0 }),
+      tab({ id: 2, windowId: 2, index: 0 }),
+    ],
+    edges: new Map([[2, 1]]),
+    focusedWindowId: 1,
+  });
+  assert.equal(byId(crossWindow, 2).parentId, null);
+
+  const deadParent = buildSnapshot({
+    tabs: [tab({ id: 2, index: 0 })],
+    edges: new Map([[2, 999]]),
+    focusedWindowId: 1,
+  });
+  assert.equal(byId(deadParent, 2).parentId, null);
+});
+
+test('pruneEdges drops dead, foreign-window and self edges', () => {
+  const edges = new Map([
+    [2, 1],
+    [3, 999],
+    [4, 4],
+    [5, 6],
+  ]);
+  const tabs = [
+    tab({ id: 1, windowId: 1 }),
+    tab({ id: 2, windowId: 1 }),
+    tab({ id: 3, windowId: 1 }),
+    tab({ id: 4, windowId: 1 }),
+    tab({ id: 5, windowId: 1 }),
+    tab({ id: 6, windowId: 2 }),
+  ];
+  pruneEdges(edges, tabs);
+  assert.deepEqual([...edges.entries()], [[2, 1]]);
+});
+
+test('closing a parent promotes its children one level', () => {
+  const snapshot = buildSnapshot({
+    tabs: [
+      tab({ id: 1, index: 0 }),
+      tab({ id: 2, index: 1, openerTabId: 1 }),
+      tab({ id: 3, index: 2, openerTabId: 2 }),
+      tab({ id: 4, index: 3, openerTabId: 2 }),
+    ],
+    focusedWindowId: 1,
+  });
+  const plan = planOrphanPromotion(snapshot.nodes, 2);
+  assert.equal(plan.grandparentId, 1);
+  assert.deepEqual(plan.children, [3, 4]);
+
+  // Simulate the worker applying the plan: children keep depth 1 under A.
+  const edges = new Map();
+  for (const childId of plan.children) edges.set(childId, plan.grandparentId);
+  const next = buildSnapshot({
+    tabs: [
+      tab({ id: 1, index: 0 }),
+      tab({ id: 3, index: 1, openerTabId: 2 }),
+      tab({ id: 4, index: 2, openerTabId: 2 }),
+    ],
+    edges,
+    focusedWindowId: 1,
+  });
+  assert.equal(byId(next, 3).parentId, 1);
+  assert.equal(byId(next, 4).parentId, 1);
+  assert.equal(byId(next, 3).depth, 1);
+  assert.equal(byId(next, 4).depth, 1);
 });
 
 test('cyclic overrides are broken without losing tabs', () => {
@@ -338,7 +444,7 @@ test('restore matches tabs by URL and rebuilds parent links after restart', () =
     tab({ id: 104, index: 3, url: 'https://d.test/' }),
   ];
 
-  const result = matchRestoreSnapshot(saved, live, { now: 1000 + 60_000 });
+  const result = matchRestoreSnapshot(saved, live, { now: 1000 + 60_000, restart: true });
   assert.equal(result.applicable, true);
   assert.equal(result.stats.matchedTabs, 4);
   assert.equal(result.stats.relations, 2);
@@ -357,19 +463,23 @@ test('restore matches tabs by URL and rebuilds parent links after restart', () =
   assert.equal(byId(snapshot, 104).parentId, null);
 });
 
-test('restore skips when a live opener already exists or snapshot is fresh', () => {
+test('restore only runs for a marked browser restart, not a fresh snapshot', () => {
   const saved = savedSnapshot();
+  const live = [
+    tab({ id: 101, index: 0, url: 'https://a.test/' }),
+    tab({ id: 102, index: 1, url: 'https://b.test/' }),
+  ];
+  // Same-session worker wake: the snapshot is a few seconds old -> never apply.
+  assert.equal(matchRestoreSnapshot(saved, live, { now: 5000 }).applicable, false);
+  // Browser restart: the session marker is gone, so the snapshot applies even
+  // when some tab still carries a live openerTabId.
   const withOpener = [
     tab({ id: 101, index: 0, url: 'https://a.test/' }),
     tab({ id: 102, index: 1, url: 'https://b.test/', openerTabId: 101 }),
   ];
-  assert.equal(matchRestoreSnapshot(saved, withOpener, { now: 1000 + 60_000 }).applicable, false);
   assert.equal(
-    matchRestoreSnapshot(saved, [
-      tab({ id: 101, index: 0, url: 'https://a.test/' }),
-      tab({ id: 102, index: 1, url: 'https://b.test/' }),
-    ], { now: 5000 }).applicable,
-    false,
+    matchRestoreSnapshot(saved, withOpener, { now: 1000 + 60_000, restart: true }).applicable,
+    true,
   );
 });
 
@@ -380,7 +490,7 @@ test('restore survives a tab closed while Chrome was off', () => {
     tab({ id: 103, index: 1, url: 'https://c.test/' }),
     tab({ id: 104, index: 2, url: 'https://d.test/' }),
   ];
-  const result = matchRestoreSnapshot(saved, live, { now: 1000 + 60_000 });
+  const result = matchRestoreSnapshot(saved, live, { now: 1000 + 60_000, restart: true });
 
   assert.equal(result.stats.matchedTabs, 3);
   assert.equal(result.overrides.get(103), null);
@@ -413,6 +523,7 @@ test('restore pairs windows by URL overlap', () => {
 
   const result = matchRestoreSnapshot(serializeRestoreSnapshot(saved), live, {
     now: 1000 + 60_000,
+    restart: true,
   });
   assert.equal(result.stats.relations, 2);
   assert.equal(result.overrides.get(11), 10);
@@ -437,6 +548,7 @@ test('duplicate URLs map in order', () => {
   ];
   const result = matchRestoreSnapshot(serializeRestoreSnapshot(saved), live, {
     now: 62_000,
+    restart: true,
   });
   assert.equal(result.overrides.get(12), 11);
   assert.equal(result.overrides.get(13), 12);
@@ -512,6 +624,36 @@ test('hashString is stable and revision changes with structure', () => {
     focusedWindowId: 1,
   });
   assert.notEqual(base.revision, collapsed.revision);
+});
+
+test('revision changes when equal-length content changes', () => {
+  const before = buildSnapshot({
+    tabs: [
+      tab({ id: 1, index: 0, title: 'AAAA', url: 'https://a.test/one' }),
+    ],
+    focusedWindowId: 1,
+  });
+  const afterTitle = buildSnapshot({
+    tabs: [
+      tab({ id: 1, index: 0, title: 'BBBB', url: 'https://a.test/one' }),
+    ],
+    focusedWindowId: 1,
+  });
+  const afterUrl = buildSnapshot({
+    tabs: [
+      tab({ id: 1, index: 0, title: 'AAAA', url: 'https://a.test/two' }),
+    ],
+    focusedWindowId: 1,
+  });
+  const afterFlag = buildSnapshot({
+    tabs: [
+      tab({ id: 1, index: 0, title: 'AAAA', url: 'https://a.test/one', audible: true }),
+    ],
+    focusedWindowId: 1,
+  });
+  assert.notEqual(before.revision, afterTitle.revision);
+  assert.notEqual(before.revision, afterUrl.revision);
+  assert.notEqual(before.revision, afterFlag.revision);
 });
 
 test('normalizeUrl drops fragments and tolerates empty input', () => {

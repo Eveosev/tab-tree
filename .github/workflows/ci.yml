@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Static checks (syntax, manifest, i18n, permissions)
+        run: npm run check
+      - name: Engine unit tests
+        run: npm test
+      - name: Package the extension
+        run: npm run build
+      - name: Upload zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: tab-tree-zip
+          path: dist/tab-tree-v*.zip
+          if-no-files-found: error
