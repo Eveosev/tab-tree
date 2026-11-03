@@ -97,7 +97,7 @@ resolve(tab):
 | `npm run test:panel` | **11/11** 真实指针拖拽：根→子、子→顶层、循环拒绝 toast；第二个窗口的面板绑定自己的窗口 |
 | `npm run test:restart` | **19/19** 两个真实 Chrome 进程：快照落盘、会话存储清空、A→B→C 以 `restored` 徽标恢复；恢复后再空闲回收 Worker，徽标/页脚保持且匹配器不重跑 |
 | `npm run bench` | **8/8**：300 标签重建 p95 14.4 ms、滚动 34.2 ms、搜索 31.4 ms；500 标签 p95 20.6 ms（见 verification.md） |
-| `npm run build` | `dist/tab-tree-v0.1.3.zip`，17 文件（含新增 `lib/session-state.js`），sha256 见 verification.md |
+| `npm run build` | `dist/tab-tree-v0.1.3.zip`，18 文件 48.1 KiB（含新增 `lib/session-state.js`），sha256 `ce936b59…4623` |
 | CI | GitHub Actions 跑 check/test/build |
 
 **已知限制：** 侧边栏在左还是在右由 Chrome 设置决定（`chrome://settings/appearance`），扩展无法强制；恢复仍是启发式，重复 URL 可能匹配错，可拖拽修正。
