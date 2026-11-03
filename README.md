@@ -43,7 +43,7 @@ The tree lives in the native **side panel** (Chrome 114+), next to the page you 
 3. **Load unpacked** → select the `extension/` directory.
 4. Click the Tab Tree toolbar icon (or the side-panel button) to open the panel.
 
-A packaged build is also available: `npm run build` creates `dist/tab-tree-v0.1.1.zip`.
+A packaged build is also available: `npm run build` creates `dist/tab-tree-v0.1.2.zip`.
 
 > Chrome 137+ ignores `--load-extension` on branded builds; use Chrome for Testing/Chromium for automated runs (see *Development*).
 
@@ -107,13 +107,22 @@ Chrome shows the normal “Read your browsing history” warning for the `tabs`/
 Requirements: Node.js ≥ 20, Chrome/Chromium 114+, `zip`/`unzip` for packaging.
 
 ```bash
-npm test          # 35 engine unit tests (node:test, zero dependencies)
-npm run check     # syntax, JSON, manifest refs, i18n parity, permission guard
-npm run build     # dist/tab-tree-v0.1.1.zip (+ sha256)
-npm run smoke     # real Chrome via CDP: nesting, panel DOM, collapse, close, worker restart, screenshots
-npm run test:e2e  # acceptance gate: real mouse clicks A→B, A→C, B→D on a live Chrome
-npm run verify    # check + test + build
+npm test           # 35 engine unit tests (node:test, zero dependencies)
+npm run check      # syntax, JSON, manifest refs, i18n parity, permission guard
+npm run build      # dist/tab-tree-v0.1.2.zip (+ sha256)
+npm run smoke      # real Chrome via CDP: nesting, panel DOM, collapse, close, worker restart, screenshots
+npm run test:e2e   # acceptance gate: real mouse clicks A→B, A→C, B→D on a live Chrome
+npm run test:panel # real pointer drag (nest / un-nest / cycle) + per-window panel binding
+npm run test:restart # closes and restarts Chrome on the same profile, asserts the tree comes back
+npm run bench      # 300-tab benchmark; TABS=500 npm run bench for the 500-tab run
+npm run verify     # check + test + build
+npm run verify:all # check + test + build + all three browser suites
 ```
+
+Latest evidence (macOS arm64, Chrome for Testing 156): `test:e2e` 8/8,
+`test:panel` 11/11, `test:restart` 10/10, `bench` 8/8. On 300 tabs a full
+service-worker rebuild measured 8.5 ms at p95 (500 tabs: 19.9 ms), the virtual
+list keeps <80 rows in the DOM, and scroll/search stay at about one frame. See [verification](docs/verification.md).
 
 No `npm install` is needed — the extension has **zero runtime and build dependencies**. Everything in `extension/` is plain ES modules loaded directly by Chrome.
 
@@ -132,7 +141,15 @@ extension/
   _locales/{en,zh_CN}       UI strings
   icons/                   16/32/48/128 PNGs
 test/tree-engine.test.js   engine unit tests
-scripts/{check,build,smoke,e2e-real-links}.mjs
+scripts/
+  check.mjs                static checks
+  build.mjs                store-shaped zip + sha256
+  smoke.mjs                browser smoke suite
+  e2e-real-links.mjs       real-mouse link acceptance gate
+  e2e-panel.mjs            pointer drag + per-window panel binding
+  e2e-restart.mjs          real browser restart restore
+  bench-tabs.mjs           300/500-tab performance benchmark
+  lib/harness.mjs          shared dependency-free CDP harness
 docs/research.md           product research, competitors, ADRs
 docs/design.md             architecture, algorithms, protocol, risks
 ```
@@ -142,7 +159,7 @@ docs/design.md             architecture, algorithms, protocol, risks
 - Chrome provides no way to restyle the native tab strip, so the tree is a side panel, not a replacement strip. Chrome also decides whether the side panel sits on the left or right (`chrome://settings/appearance` → side panel position); an extension cannot force it to the left.
 - Creation edges are session-scoped, like Chrome’s own tab ids. After a browser restart the tree is reconstructed by the heuristic matcher and marked as inferred.
 - Tabs that were already open before the extension was installed have no captured edge and start as roots until you drag them.
-- Session restore is heuristic: duplicate URLs and heavy reordering can produce an occasional wrong link. Restored links are badged and can be fixed in one drag.
+- Session restore is heuristic: duplicate URLs and heavy reordering can produce an occasional wrong link. Chrome restores tabs asynchronously, so the worker retries the URL/LCS match for up to 15 s after startup. Restored links are badged and can be fixed in one drag.
 - Collapse state is session-scoped (tab ids do not survive a browser restart).
 - Drag currently changes parent/child, not sibling order.
 - Side panel requires Chrome 114+; a popup fallback is on the roadmap.

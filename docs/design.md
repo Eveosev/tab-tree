@@ -1,6 +1,6 @@
 # Tab Tree — technical design
 
-Version: 0.1.1 · Chrome 114+ · MV3 · zero-build ES modules
+Version: 0.1.2 · Chrome 114+ · MV3 · zero-build ES modules
 
 ## 1. Goals and non-goals
 
@@ -53,6 +53,10 @@ flowchart LR
 | `scripts/build.mjs` | Store-shaped zip + sha256. |
 | `scripts/smoke.mjs` | Real Chrome via CDP: creation-edge nesting, panel DOM, collapse, close, worker restart, screenshots. |
 | `scripts/e2e-real-links.mjs` | Acceptance gate with real mouse clicks: A→B, A→C, B→D, background click, opener-less root. |
+| `scripts/e2e-panel.mjs` | Real pointer drag (nest, un-nest, cycle rejection) and per-window panel binding. |
+| `scripts/e2e-restart.mjs` | Full browser restart on the same profile with `--restore-last-session`; asserts the snapshot rebuilds A→B→C. |
+| `scripts/bench-tabs.mjs` | 300/500-tab rebuild, scroll and search measurements with regression ceilings. |
+| `scripts/lib/harness.mjs` | Shared CDP/browser/fixture harness (no dependencies). |
 
 ## 3. Data model
 
@@ -180,7 +184,6 @@ Written 900 ms after a change (debounced) and on `onSuspend`.
 
 ```
 applicable = session marker absent (= browser restart or an onStartup wake)
-          && no live tab has openerTabId
           && saved snapshot exists
 ```
 
@@ -188,14 +191,28 @@ applicable = session marker absent (= browser restart or an onStartup wake)
 worker restarts. `init()` writes a `sessionMarker` the first time it runs in a
 session and only treats a missing marker (or `runtime.onStartup`) as a restart.
 A plain worker wake therefore never overwrites the live tree with an old
-snapshot. The `openerTabId` check remains only as a last-resort guard for
-same-session extension reloads; it is no longer the restart signal (v0.1.0
-used it, and normal foreground opens could false-positive).
+snapshot.
+
+v0.1.2 removes the old “no live `openerTabId` anywhere” guard. Real restarts can
+leave one incidental opener (Chrome sometimes restores an extra `about:blank`
+tab with an opener), which suppressed the whole restore. The retry loop is a
+better guard:
+
+1. `init()` matches immediately and applies the best partial result.
+2. `tabs.onCreated/onUpdated/onRemoved/onReplaced` and focus/attach events
+   re-run the match after a 250 ms debounce, replacing the previously applied
+   relations with the improved alignment.
+3. The loop closes when every saved tab is matched, or after a 15 s window; the
+   best match is persisted to `restoreStats` and broadcast.
+
+This is required because Chrome restores session tabs asynchronously: the
+service worker can start before the tabs exist, and a single one-shot match at
+`init()` would see an empty window.
 
 - Restore applies the previous tree as `overrides` (marked `restored`), which
   take priority over any new creation edges captured after startup.
-- If Chrome *did* preserve openers, the live opener is still better for tabs
-  the matcher could not place.
+- Tabs the matcher could not place keep their live opener/edge or fall back to
+  a root; the retry loop only adds relations for matched endpoints.
 - Window pairing: greedy max URL-overlap between saved windows and live windows (a window can be reused after restart, so ids are not trustworthy).
 - Tab pairing inside a pair: **longest common subsequence** over `normalizedUrl + pinned` ordered by native index. LCS tolerates tabs closed and reordered while preserving order.
 - Transfer a parent link only if both endpoints matched; otherwise the tab becomes a root with `inferred`/`lost` semantics. Every restored node is flagged `inferred` and rendered with a restore badge.
@@ -318,10 +335,13 @@ Change detection uses `revision`; unchanged rebuilds do not broadcast or persist
 | --- | --- | --- |
 | Engine | `node --test` | 35 cases: inference (opener/edge/override priority), orphan, cross-window, cycles, DFS ordering, descendant count, collapse/search, reparent validation, native order, restore (dead tab, sealed windows, duplicates, restart marker), edge pruning/promotion, serialization, content-aware revision hash, depth cap, prefs |
 | Static | `scripts/check.mjs` | every `.js` parses, JSON valid, manifest files exist, i18n key parity and usage, version consistency, no `<all_urls>` |
-| Build | `scripts/build.mjs` | zip `dist/tab-tree-v0.1.1.zip`, print sha256/size |
+| Build | `scripts/build.mjs` | zip `dist/tab-tree-v0.1.2.zip`, print sha256/size |
 | E2E | `scripts/smoke.mjs` | real Chrome for Testing: load extension, creation-edge nesting, panel indentation, collapse/expand, close, worker termination recovery, light/dark screenshots |
 | Acceptance | `scripts/e2e-real-links.mjs` | real mouse events in Chrome for Testing: A→B, A→C, B→D, Cmd/Ctrl+click background child, opener-less root; asserts snapshot depths and panel indentation (8/8) |
-| Manual | chrome://extensions | load unpacked, open side panel, drag, keyboard, multi-window |
+| Interaction | `scripts/e2e-panel.mjs` | real pointer drag: root→child, child→top-level, cycle rejection toast; per-window panel binding (11/11) |
+| Restart | `scripts/e2e-restart.mjs` | same profile, two real Chrome processes: snapshot persisted, session wiped, A→B→C rebuilt with inferred badges and stats (10/10) |
+| Performance | `scripts/bench-tabs.mjs` | 300 and 500 tabs: rebuild p95, scroll repaint, search filter; DOM stays virtualized (7/7) |
+| Manual | chrome://extensions | load unpacked, open side panel, keyboard, native sort, left/right panel position |
 
 **Why Chrome for Testing:** branded Chrome 137+ ignores `--load-extension` (malware mitigation), so automated e2e uses Chrome for Testing / Chromium (`CHROME_PATH` override supported).
 
@@ -333,11 +353,11 @@ Change detection uses `revision`; unchanged rebuilds do not broadcast or persist
 | Address-bar tab is a root sibling | no opener → root | unit tests; smoke `/other` |
 | 3-level nesting, collapse persists | DFS + collapsed set | unit tests; smoke collapse/expand |
 | Parent close promotes children one level / optional subtree close | `closeTab`, `planOrphanPromotion`, `getDescendantIds` | unit test + real-browser e2e (`closing B promotes D to a depth-1 child of A`) |
-| Drag reparent + native DFS order | pointer drag, `canReparent`, `reorderNative` | engine tests; manual (headless drag not simulated) |
+| Drag reparent + native DFS order | pointer drag, `canReparent`, `reorderNative` | `npm run test:panel` 11/11 real pointer events, including cycle rejection |
 | Worker death → recover <5 s | port reconnect + rebuild | smoke kills worker, waits for revival |
-| Browser restart restore uses a real restart marker, not a live-opener proxy | `storage.session` marker + `onStartup` | unit tests for `matchRestoreSnapshot`; manual restart checklist (not automated) |
-| Multi-window forests | windowId partitioning | unit tests |
-| 500 tabs performance | virtualization + coalescing | design; manual target (<300 ms first paint) |
+| Browser restart restore uses a real restart marker, not a live-opener proxy | `storage.session` marker + `onStartup` + retry loop | `npm run test:restart` 10/10 across two real browser processes |
+| Multi-window forests, panel follows its host window | windowId partitioning + `detectHostWindow()` | `npm run test:panel` window-picker assertion; unit tests |
+| 500 tabs performance | virtualization + coalescing | `npm run bench` measured: 300 tabs rebuild p95 8.5 ms, scroll 34.0 ms, search 27.0 ms; 500 tabs rebuild p95 19.9 ms (details in verification.md) |
 | No `<all_urls>`/remote code; loadable | manifest check | `npm run check`, `npm run build`, smoke load |
 
 ## 15. Risks and mitigations
@@ -365,4 +385,4 @@ Change detection uses `revision`; unchanged rebuilds do not broadcast or persist
 - Build cost: O(n log n) per rebuild (sort + DFS), trivial for 500 tabs; the engine is pure and allocation-light.
 - Panel: at most ~25 rows in the DOM at 380×760; scroll renders only when the row range changes.
 - Broadcast: full snapshot ≈75 KB for 500 tabs; coalesced at 60 ms. A delta protocol is unnecessary at this scale and would add reconciliation bugs.
-- Storage: restore snapshot ≈60 KB for 500 tabs, debounced 900 ms; well under `storage.local` quota (10 MB, unlimitedStorage not required).
+- Storage: the restore snapshot stays well under 1 MB even for a 500-tab session (the full broadcast snapshot measured 214 KiB), debounced 900 ms; well under the `storage.local` quota (10 MB, `unlimitedStorage` not required).

@@ -57,6 +57,13 @@ const state = {
   prefs: { ...DEFAULT_PREFS },
   /** @type {null|{stats: Object, appliedAt: number}} */
   restore: null,
+  /**
+   * Pending restart reconciliation. Chrome restores tabs asynchronously, so
+   * `init()` may run before the session's tabs exist; matching is retried on
+   * tab events until every saved tab is matched or the window closes.
+   * @type {null|{saved: Object, appliedIds: Set<number>, best: Object|null, timer: any, finalTimer: any}}
+   */
+  pendingRestore: null,
   focusedWindowId: null,
   reorderUntil: 0,
   ready: null,
@@ -336,6 +343,102 @@ function post(port, message) {
 /* Init (also used as the post-restore reconciliation)                        */
 /* -------------------------------------------------------------------------- */
 
+const RESTORE_WINDOW_MS = 15_000;
+
+/**
+ * Chrome restores the previous session's tabs asynchronously and does not
+ * preserve `openerTabId` across the restart. The saved snapshot is therefore
+ * matched against live tabs; because `init()` can run before the tabs appear,
+ * attempts are retried from tab events until every saved tab is matched or a
+ * 15 s window expires.
+ */
+function beginRestore(saved, tabs) {
+  state.pendingRestore = {
+    saved,
+    appliedIds: new Set(),
+    best: null,
+    timer: null,
+    finalTimer: null,
+  };
+  state.pendingRestore.finalTimer = setTimeout(() => finalizeRestore('deadline'), RESTORE_WINDOW_MS);
+  applyRestoreAttempt(tabs);
+}
+
+/**
+ * Match the saved forest against the current tabs and apply the best result so
+ * far. A partial match is applied immediately (the panel shows the tree as it
+ * comes back) and a later, better match replaces it.
+ *
+ * @param {chrome.tabs.Tab[]} tabs
+ * @returns {boolean} true when the snapshot matched at least one tab
+ */
+function applyRestoreAttempt(tabs) {
+  const pending = state.pendingRestore;
+  if (!pending) return false;
+  const matched = matchRestoreSnapshot(pending.saved, tabs, { now: Date.now(), restart: true });
+  if (!matched.applicable || matched.stats.matchedTabs === 0) return false;
+
+  const previous = pending.best;
+  const better =
+    !previous ||
+    matched.stats.matchedTabs > previous.stats.matchedTabs ||
+    (matched.stats.matchedTabs === previous.stats.matchedTabs &&
+      matched.stats.relations > previous.stats.relations);
+  if (!better) return true;
+
+  // Replace (not merge) the relations applied by the previous attempt so a
+  // later LCS alignment can correct an early, partial match.
+  for (const tabId of pending.appliedIds) {
+    state.overrides.delete(tabId);
+    state.inferred.delete(tabId);
+  }
+  pending.appliedIds.clear();
+  for (const [tabId, parentId] of matched.overrides) {
+    state.overrides.set(tabId, parentId);
+    pending.appliedIds.add(tabId);
+  }
+  for (const tabId of matched.inferred) state.inferred.add(tabId);
+  pending.best = matched;
+  state.restore = { appliedAt: Date.now(), stats: matched.stats };
+  saveSessionState({ immediate: true });
+  persistRestoreStats(matched.stats);
+
+  if (matched.stats.matchedTabs >= pending.saved.nodes.length) finalizeRestore('complete');
+  return true;
+}
+
+/** Re-run the match shortly after a tab appears/updates while pending. */
+function kickRestoreAttempt() {
+  const pending = state.pendingRestore;
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  pending.timer = setTimeout(async () => {
+    if (!state.pendingRestore) return;
+    const tabs = await chrome.tabs.query({}).catch(() => []);
+    if (applyRestoreAttempt(tabs)) scheduleBuild('restore-apply', 30);
+  }, 250);
+}
+
+function persistRestoreStats(stats) {
+  chrome.storage.local
+    .set({ [STORAGE.restoreStats]: { appliedAt: Date.now(), stats } })
+    .catch((error) => console.warn('[tab-tree] restore stats persist failed', error));
+}
+
+/** Close the restore window: persist stats and repaint with the best match. */
+function finalizeRestore(reason) {
+  const pending = state.pendingRestore;
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  clearTimeout(pending.finalTimer);
+  state.pendingRestore = null;
+  if (!pending.best) return;
+  persistRestoreStats(pending.best.stats);
+  saveSessionState({ immediate: true });
+  scheduleBuild(`restore-${reason}`, 0);
+  console.info('[tab-tree] restored session', pending.best.stats);
+}
+
 async function init() {
   const local = await loadState();
   const newBrowserSession = local.sessionMarker === null;
@@ -349,32 +452,26 @@ async function init() {
 
   // `storage.session` survives service-worker restarts but is wiped when the
   // browser restarts. A missing marker (or an onStartup wake) is therefore the
-  // restart signal; a plain worker wake must never re-apply the timestamped
-  // snapshot over the live tree. A live openerTabId means Chrome still knows
-  // relations for this session (e.g. extension reload), so there is nothing to
-  // reconstruct and applying a stale snapshot would only add noise.
-  const liveOpeners = tabs.some((tab) => Number.isInteger(tab.openerTabId));
+  // restart signal; a plain worker wake must never re-apply the snapshot over
+  // the live tree. Do **not** gate on the presence of any live `openerTabId`:
+  // Chrome can restore one incidental opener (e.g. an extra about:blank tab),
+  // and that must not suppress the whole restore.
   const isRestart = newBrowserSession || state.startupSignal;
-  if (isRestart && !liveOpeners && local.restoreSnapshot) {
-    const matched = matchRestoreSnapshot(local.restoreSnapshot, tabs, {
-      now: Date.now(),
-      restart: true,
-    });
-    if (matched.applicable && matched.stats.matchedTabs > 0) {
-      state.overrides = new Map(matched.overrides);
-      state.inferred = new Set(matched.inferred);
-      state.restore = { appliedAt: Date.now(), stats: matched.stats };
-      await chrome.storage.local.set({
-        [STORAGE.restoreStats]: { appliedAt: Date.now(), stats: matched.stats },
-      });
-      saveSessionState({ immediate: true });
-      console.info('[tab-tree] restored session', matched.stats);
-    }
+  if (isRestart) {
+    if (local.restoreSnapshot) beginRestore(local.restoreSnapshot, tabs);
   } else if (local.restoreStats) {
+    // A worker wake inside the same browser session: keep showing the summary
+    // of the restore that happened when the session started.
     state.restore = local.restoreStats;
   }
 
-  await buildNow('init');
+  if (state.pendingRestore) {
+    // `beginRestore` already queried the tabs; rebuild once now and let tab
+    // events drive the remaining reconciliation.
+    scheduleBuild('init-pending-restore', 0);
+  } else {
+    await buildNow('init');
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -581,16 +678,21 @@ chrome.runtime.onConnect.addListener((port) => {
     .catch(() => {});
 });
 
-const rebuild = () => scheduleBuild('tabs-event');
+const rebuild = () => {
+  kickRestoreAttempt();
+  scheduleBuild('tabs-event');
+};
 
 chrome.tabs.onCreated.addListener((tab) => {
   // Capture the browser-provided opener immediately: Chrome clears it as soon
   // as the next foreground tab is inserted.
   if (Number.isInteger(tab.openerTabId)) captureEdge(tab.id, tab.openerTabId, 'onCreated');
+  kickRestoreAttempt();
   scheduleBuild('tabs-created');
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
   handleExternalTabRemoved(tabId);
+  kickRestoreAttempt();
   scheduleBuild('tabs-removed');
 });
 chrome.tabs.onMoved.addListener(rebuild);
@@ -608,11 +710,13 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     changeInfo.discarded !== undefined ||
     changeInfo.groupId !== undefined
   ) {
+    kickRestoreAttempt();
     scheduleBuild('tab-updated', 120);
   }
 });
 chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
   migrateTabId(removedTabId, addedTabId);
+  kickRestoreAttempt();
   scheduleBuild('tab-replaced');
 });
 if (chrome.webNavigation?.onCreatedNavigationTarget) {

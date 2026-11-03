@@ -7,8 +7,8 @@ Chrome for Testing 156.0.8078.4 (headless CDP; headed CFT reproduced the same
 Scope: verify the user story “a tab opened from a link inside **A** is a child
 of **A**, nested to any depth; a tab opened independently (address bar /
 Ctrl+T / bookmark) is a sibling root”. This report records the **0.1.0
-failure**, the root cause, and the **0.1.1 fix now implemented in the
-workspace**.
+failure**, the root cause, the **0.1.1 fix**, and the **0.1.2 reconcile
+release**, which closes the remaining browser-level verification gaps.
 
 ## Verdict
 
@@ -23,15 +23,24 @@ the extension’s reparent override.
 build-time live-opener probe), stored as `edges: Map<childTabId, parentTabId>`
 in `chrome.storage.session`, and resolved ahead of `openerTabId`.
 
-## Commands and results (0.1.1 workspace)
+**0.1.2 passes with browser-level coverage.** A real two-process restart test
+found and fixed a restore blocker: one incidental live opener suppressed the
+snapshot, and `init()` could run before Chrome restored the tabs. Restore is now
+retried from tab events for up to 15 s. Drag, multi-window panel binding and
+300/500-tab performance are executable suites rather than manual claims.
+
+## Commands and results (0.1.2 workspace)
 
 | Command | Result |
 | --- | --- |
-| `npm run check` | ✔ 15 files, manifest v0.1.1 (`tabs, sidePanel, storage, webNavigation`), 37/37 i18n, no `<all_urls>` / remote scripts |
+| `npm run check` | ✔ 19 files, manifest v0.1.2 (`tabs, sidePanel, storage, webNavigation`), 37/37 i18n, no `<all_urls>` / remote scripts |
 | `npm test` | ✔ 35/35 engine tests |
 | `npm run smoke` | ✔ 29/29 checks |
 | `npm run test:e2e` | ✔ **8/8** real mouse-link checks |
-| `npm run build` | ✔ `dist/tab-tree-v0.1.1.zip`, 17 files, 45.7 KiB, sha256 `ee6e851a…c3e4` |
+| `npm run test:panel` | ✔ **11/11** pointer drag + per-window panel checks |
+| `npm run test:restart` | ✔ **10/10** across two real Chrome processes |
+| `npm run bench` | ✔ **8/8** at 300 tabs and 500 tabs |
+| `npm run build` | ✔ `dist/tab-tree-v0.1.2.zip`, 17 files, 46.7 KiB, sha256 `90588de9…a459` |
 
 ### `npm run test:e2e` result
 
@@ -119,19 +128,22 @@ the opener survives. The suite has been changed: it no longer calls
 levels. The new `test:e2e` is the acceptance gate for the foreground-click
 regression.
 
-## Residual findings / gaps
+## Residual findings / gaps after 0.1.2
 
-1. Real browser-restart restore is still only unit-tested (`matchRestoreSnapshot`
-   + marker logic); no automated restart E2E.
-2. Drag reparent is validated by engine tests and uses the same `canReparent`
-   path in the UI, but no synthetic pointer-drag E2E.
-3. 500-tab performance remains a design target, not a measurement.
+1. Real browser-restart restore is now automated (`scripts/e2e-restart.mjs`,
+   10/10): snapshot persisted, session storage wiped, A→B→C rebuilt with
+   inferred badges.
+2. Drag reparent is now automated with real pointer events
+   (`scripts/e2e-panel.mjs`, 11/11): nest, un-nest and cycle rejection.
+3. Performance is measured (`scripts/bench-tabs.mjs`): at 500 tabs a full
+   rebuild is 19.9 ms p95, scroll/search ≈ one frame, DOM < 80 rows.
 4. The extension remains a sidebar, not a native tab-strip replacement; Chrome
-   controls whether the side panel is on the left or right.
+   controls whether the side panel is on the left or right
+   (`chrome://settings/appearance`). This is a platform limit, not a bug.
 5. `webNavigation` is required for AC1. Without it, only the latest/background
    opener survives and A→B, A→C regresses.
-6. Two public repos exist for this task (`Eveosev/tab-tree` and the empty
-   `Eveosev/tree_task_tab_manager`); only the former matches the code.
+6. Restore remains heuristic for duplicate URLs and extreme reordering; the
+   retry loop makes it non-blocking, not omniscient.
 
 ## Artifacts
 
