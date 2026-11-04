@@ -689,3 +689,34 @@ test('prefs are merged with defaults into the snapshot', () => {
   assert.equal(snapshot.prefs.closeChildrenWithParent, true);
   assert.equal(snapshot.prefs.autoSortNative, DEFAULT_PREFS.autoSortNative);
 });
+
+test('snapshot exposes link stats used by the onboarding hint', () => {
+  const tabs = [
+    tab({ id: 1, index: 0 }),
+    tab({ id: 2, index: 1, openerTabId: 1 }),
+    tab({ id: 3, index: 2, openerTabId: 4 }),
+    tab({ id: 4, index: 3 }),
+  ];
+  const snapshot = buildSnapshot({
+    tabs,
+    edges: new Map([[2, 1]]),
+    overrides: new Map([[3, 4]]),
+    inferred: new Set(),
+  });
+  assert.deepEqual(snapshot.linkStats, {
+    captured: 1,
+    manual: 1,
+    restored: 0,
+    parented: 2,
+    roots: 2,
+  });
+
+  const restored = buildSnapshot({
+    tabs,
+    overrides: new Map([[2, 1]]),
+    inferred: new Set([2]),
+  });
+  assert.equal(restored.linkStats.restored, 1);
+  assert.equal(restored.linkStats.manual, 0);
+  assert.equal(restored.nodes.find((node) => node.tabId === 2).relation, 'restore');
+});

@@ -8,7 +8,9 @@ Scope: verify the user story “a tab opened from a link inside **A** is a child
 of **A**, nested to any depth; a tab opened independently (address bar /
 Ctrl+T / bookmark) is a sibling root”. This report records the **0.1.0
 failure**, the root cause, the **0.1.1 fix**, the **0.1.2 reconcile
-release**, and the **0.1.3 restore-state fix**.
+release**, and the **0.1.3 restore-state fix**. The 0.2.0 discoverability and
+restore-hardening results live in [verification.md](verification.md); this file
+remains the 0.1.x acceptance record.
 
 ## Verdict
 

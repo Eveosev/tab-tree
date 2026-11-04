@@ -7,6 +7,10 @@
 ![Tab Tree side panel (light)](docs/screenshot-light.png#gh-light-mode-only)
 ![Tab Tree side panel (dark)](docs/screenshot-dark.png#gh-dark-mode-only)
 
+The setup guide that opens on install shows the live tree and whether link capture is working:
+
+![Tab Tree setup guide](docs/welcome.png)
+
 ## Why
 
 Chrome’s tab strip is flat. Research branches (docs → API → example → issue) turn into an unreadable row of lookalike tabs. Chrome exposes no API to restyle the native strip, but it does expose the signal that matters: **which page opened a new tab**.
@@ -17,7 +21,9 @@ Chrome’s tab strip is flat. Research branches (docs → API → example → is
 
 The relation is captured from `chrome.webNavigation.onCreatedNavigationTarget` (and `tabs.onCreated`/live `openerTabId` as fallbacks) the moment the tab is created, then persisted for the browser session. This matters because Chrome **clears `openerTabId`** as soon as another foreground tab is inserted: relying on the live property alone would flatten A→B→C after the second child opens. Captured edges are what make the tree stable.
 
-The tree lives in the native **side panel** (Chrome 114+), next to the page you are browsing. The toolbar button opens it.
+The tree lives in the native **side panel** (Chrome 114+), next to the page you are browsing. The toolbar button opens it, and a **setup guide with a live tree preview opens automatically on install/update** so the panel is never hidden behind the toolbar puzzle menu.
+
+> **Looking at Chrome's own vertical tabs?** Chrome 137+ ships a left-hand vertical-tab strip with tab groups. It is browser UI: no extension can restyle or indent it. Tab Tree is a separate side panel — look for the blue **Tab Tree** header and the **Search tabs** box. See [troubleshooting](docs/troubleshooting.md) if the panel stays flat.
 
 ## Features
 
@@ -30,7 +36,8 @@ The tree lives in the native **side panel** (Chrome 114+), next to the page you 
 | 🔍 **Search** | Filters title/URL, keeps ancestors visible, auto-expands matches. |
 | 🧭 **Multi-window** | One forest per window; a window picker appears when more than one exists. |
 | 🗂️ **Collapse / expand all** | Bulk toggle, state persisted for the browser session. |
-| 💾 **Session restore** | Fingerprint snapshot + order-preserving URL matching after a browser restart; restored links carry a badge. |
+| 💾 **Session restore** | Fingerprint snapshot + order-preserving URL matching after a browser restart; 60 s retry window, progress in the footer, and the pending restore survives an MV3 worker reclaim. Restored links carry a badge. |
+| 🧭 **Setup guide** | Opens on install/update with a live preview, one-click side-panel launch, and a self-check for tracked/restored links. |
 | ⚡ **Fast with hundreds of tabs** | Fixed-height virtual list, 60 ms event coalescing, pure rebuild-on-demand engine. |
 | 🎨 **Native feel** | Automatic light/dark, compact rows, favicons, pinned/audio indicators. |
 | 🌍 **i18n** | English and Simplified Chinese (`_locales`). |
@@ -41,9 +48,9 @@ The tree lives in the native **side panel** (Chrome 114+), next to the page you 
 1. Clone this repo.
 2. Open `chrome://extensions`, enable **Developer mode**.
 3. **Load unpacked** → select the `extension/` directory.
-4. Click the Tab Tree toolbar icon (or the side-panel button) to open the panel.
+4. A setup guide opens automatically. Use **Open the Tab Tree side panel** (or click the Tab Tree toolbar icon / pin it first).
 
-A packaged build is also available: `npm run build` creates `dist/tab-tree-v0.1.3.zip`.
+A packaged build is also available: `npm run build` creates `dist/tab-tree-v0.2.0.zip`.
 
 > Chrome 137+ ignores `--load-extension` on branded builds; use Chrome for Testing/Chromium for automated runs (see *Development*).
 
@@ -86,10 +93,10 @@ flowchart LR
 
 - **Parent inference:** explicit override → captured creation edge → live `openerTabId` → root. A dead opener is marked `orphan`; an override chain that would cycle is broken defensively. Closing a parent promotes its direct children one level (A > B > C becomes A > C); “close children with parent” is available in Settings.
 - **Rebuild on wake:** MV3 workers are disposable. Every wake re-queries tabs and recomputes the forest, so no event can be permanently lost.
-- **Restore:** a compact `{url, index, parentId}` snapshot is written to `storage.local`; a marker in `storage.session` distinguishes a real browser restart from a service-worker wake. A plain wake never replays the snapshot: edges, overrides, collapse state and restored (`inferred`) flags are all persisted in `storage.session`, and only a missing marker triggers restoration. After a restart, windows are paired by URL overlap and tabs are aligned with LCS over normalized URLs, then parent links are transferred. Uncertain links are marked and can be re-hung by dragging.
+- **Restore:** a compact `{url, index, parentId}` snapshot is written to `storage.local`; a marker in `storage.session` distinguishes a real browser restart from a service-worker wake. A plain wake never replays the snapshot: edges, overrides, collapse state and restored (`inferred`) flags are all persisted in `storage.session`, and only a missing marker triggers restoration. After a restart, windows are paired by URL overlap and tabs are aligned with LCS over normalized URLs, then parent links are transferred. The matcher retries for up to 60 s (Chrome restores large sessions lazily), a fully matched session finalizes immediately, and a partial match settles after 8 s without improvement. While a restore is pending the on-disk snapshot is never overwritten by a partial rebuild, and an in-flight restore is persisted so a reclaimed MV3 worker resumes it instead of abandoning the tree. User drags made during the window win over the heuristic. Uncertain links are marked and can be re-hung by dragging.
 - **Ordering:** siblings follow `tab.index`; DFS flattening defines native order after an explicit sort.
 
-More detail: [design](docs/design.md) · [中文设计说明](docs/design.zh.md) · [research notes](docs/research.md) · [verification report](docs/verification.md).
+More detail: [design](docs/design.md) · [中文设计说明](docs/design.zh.md) · [research notes](docs/research.md) · [verification report](docs/verification.md) · [troubleshooting / 排查指南](docs/troubleshooting.md).
 
 ## Permissions
 
@@ -107,12 +114,13 @@ Chrome shows the normal “Read your browsing history” warning for the `tabs`/
 Requirements: Node.js ≥ 20, Chrome/Chromium 114+, `zip`/`unzip` for packaging.
 
 ```bash
-npm test           # 41 unit tests: tree engine + session-state codec (node:test, zero dependencies)
+npm test           # 45 unit tests: tree engine + session-state codec (node:test, zero dependencies)
 npm run check      # syntax, JSON, manifest refs, i18n parity, permission guard
-npm run build      # dist/tab-tree-v0.1.3.zip (+ sha256)
+npm run build      # dist/tab-tree-v0.2.0.zip (+ sha256)
 npm run smoke      # real Chrome via CDP: nesting, panel DOM, collapse, close, worker wake regression, screenshots
 npm run test:e2e   # acceptance gate: real mouse clicks A→B, A→C, B→D on a live Chrome
 npm run test:panel # real pointer drag (nest / un-nest / cycle) + per-window panel binding
+npm run test:onboarding # setup guide auto-open, live preview, first-run hint, real A->B link
 npm run test:restart # closes and restarts Chrome on the same profile, asserts the tree comes back
 npm run bench      # 300-tab benchmark; TABS=500 npm run bench for the 500-tab run
 npm run verify     # check + test + build
@@ -137,6 +145,7 @@ extension/
   manifest.json            MV3 manifest (114+, tabs/sidePanel/storage/webNavigation)
   background.js            service worker: events, build loop, intents, persistence
   sidepanel.html/.css/.js  virtualized tree UI
+  welcome.html/.css/.js    setup guide: live preview, open-panel button, self-check
   lib/tree-engine.js       pure tree algorithms (tested in Node)
   lib/session-state.js     session storage codec (marker, edges, inferred)
   _locales/{en,zh_CN}       UI strings
@@ -160,8 +169,9 @@ docs/design.md             architecture, algorithms, protocol, risks
 
 - Chrome provides no way to restyle the native tab strip, so the tree is a side panel, not a replacement strip. Chrome also decides whether the side panel sits on the left or right (`chrome://settings/appearance` → side panel position); an extension cannot force it to the left.
 - Creation edges are session-scoped, like Chrome’s own tab ids. After a browser restart the tree is reconstructed by the heuristic matcher and marked as inferred.
-- Tabs that were already open before the extension was installed have no captured edge and start as roots until you drag them.
-- Session restore is heuristic: duplicate URLs and heavy reordering can produce an occasional wrong link. Chrome restores tabs asynchronously, so the worker retries the URL/LCS match for up to 15 s after startup. Restored links are badged and can be fixed in one drag.
+- Tabs that were already open before the extension was installed have no captured edge and start as roots until you drag them. v0.2.0 can still use live `openerTabId` values that Chrome remembers at install time, but it cannot invent missing history.
+- Chrome's native vertical-tab strip cannot be restyled or indented. Tab Tree always renders in its own side panel; the setup guide and [troubleshooting](docs/troubleshooting.md) explain how to tell them apart.
+- Session restore is heuristic: duplicate URLs and heavy reordering can produce an occasional wrong link. Chrome restores tabs asynchronously, so the worker retries the URL/LCS match for up to 60 s after startup (and resumes after a worker reclaim). Restored links are badged and can be fixed in one drag.
 - Collapse state is session-scoped (tab ids do not survive a browser restart).
 - Drag currently changes parent/child, not sibling order.
 - Side panel requires Chrome 114+; a popup fallback is on the roadmap.

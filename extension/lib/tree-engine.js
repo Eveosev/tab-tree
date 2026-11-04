@@ -341,6 +341,20 @@ export function buildSnapshot({
   const activeWindow = windows.find((w) => w.focused) || windows[0] || null;
   const activeTabId = activeWindow ? activeWindow.activeTabId : null;
 
+  // Small, UI-facing counters. The side panel uses them to distinguish "this
+  // browser has no link relationships yet" (show onboarding) from a real empty
+  // or restored tree. Overrides on live tabs are counted separately so a
+  // restore-inferred link is never presented as a manually captured one.
+  const parented = nodes.filter((node) => node.parentId !== null).length;
+  const manualLinks = [...overrides.entries()].filter(([tabId]) => !inferred.has(tabId)).length;
+  const linkStats = {
+    captured: edges.size,
+    manual: manualLinks,
+    restored: inferred.size,
+    parented,
+    roots: nodes.length - parented,
+  };
+
   const normalizedPrefs = { ...DEFAULT_PREFS, ...(prefs || {}) };
   // Hash the displayed content, not just its length: two tabs with equal-length
   // titles must still trigger a panel update when their text changes.
@@ -369,6 +383,8 @@ export function buildSnapshot({
     prefs: normalizedPrefs,
     windows,
     nodes,
+    linkStats,
+    restoring: null,
     restore: null,
   };
 }

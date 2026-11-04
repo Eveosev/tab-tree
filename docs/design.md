@@ -1,6 +1,6 @@
 # Tab Tree — technical design
 
-Version: 0.1.3 · Chrome 114+ · MV3 · zero-build ES modules
+Version: 0.2.0 · Chrome 114+ · MV3 · zero-build ES modules
 
 ## 1. Goals and non-goals
 
@@ -211,8 +211,16 @@ better guard:
 2. `tabs.onCreated/onUpdated/onRemoved/onReplaced` and focus/attach events
    re-run the match after a 250 ms debounce, replacing the previously applied
    relations with the improved alignment.
-3. The loop closes when every saved tab is matched, or after a 15 s window; the
-   best match is persisted to `restoreStats` and broadcast.
+3. The loop closes when every saved tab is matched (immediately), after 8 s
+   without a better match (settled), or after a hard 60 s window; the best match
+   is persisted to `restoreStats` and broadcast. The 15 s window in 0.1.3 was
+   too short for large/lazy sessions and produced a flat tree that needed a
+   manual refresh. While the loop is active the partial rebuild is **not**
+   written to `storage.local`, so the only complete snapshot cannot be
+   overwritten. The pending record is persisted in `storage.session`: if the
+   MV3 worker is reclaimed mid-restore, the next wake resumes the reconciliation
+   instead of treating the wake as a normal session. Manual drags replace
+   inferred relations even during the window.
 
 This is required because Chrome restores session tabs asynchronously: the
 service worker can start before the tabs exist, and a single one-shot match at
@@ -293,7 +301,7 @@ Change detection uses `revision`; unchanged rebuilds do not broadcast or persist
 
 ```
 ┌────────────────────────────────────────┐
-│ 🌳 Tab Tree        [Window 1 · 7] ⚙    │  36 px brand row
+│ 🌳 Tab Tree        [Window 1 · 7] ? ⚙  │  36 px brand row
 │ 🔍 Search tabs…                    7/9 │  30 px search row
 ├────────────────────────────────────────┤
 │ ▸ chrome.sidePanel API — Chrome …      │  active row, root
@@ -316,7 +324,9 @@ Change detection uses `revision`; unchanged rebuilds do not broadcast or persist
 - **Drag:** pointer events; 6 px threshold; ghost label; row highlight; auto-scroll near edges; drop on a row = child, drop on the fixed root zone = top-level; `Esc` is not required because releasing outside cancels. A click after a drag is suppressed for 300 ms.
 - **Virtualization:** `tree-inner` height = `rows × 32`; absolute rows; only visible rows + 8 overscan are in the DOM; re-render is skipped when the range/revision is unchanged.
 - **Theme:** `prefers-color-scheme`; both themes verified in screenshots.
-- **i18n:** manifest + 37 UI keys, EN and zh_CN, with English fallback for demo mode.
+- **i18n:** manifest + 78 UI keys (including the setup guide), EN and zh_CN, with English fallback for demo mode.
+- **Help / onboarding:** a `?` button opens `welcome.html`; the first-run hint banner appears only while no link/restore relationship exists and disappears as soon as one is captured. The footer shows `Restoring tabs… N/M` while the restart reconciliation is active and a dotted underline when a restore is partial.
+- **Do not confuse the two UIs:** Chrome's native vertical-tab strip is browser UI and cannot be indented by an extension. The setup guide (`welcome.html`) states this explicitly, shows a live tree preview and a self-check of captured/restored link counts, and opens the real side panel from a click (user gesture required by `chrome.sidePanel.open`).
 
 ## 11. Robustness
 
@@ -344,12 +354,13 @@ Change detection uses `revision`; unchanged rebuilds do not broadcast or persist
 
 | Layer | Tool | Coverage |
 | --- | --- | --- |
-| Engine | `node --test` | 41 cases: inference (opener/edge/override priority), orphan, cross-window, cycles, DFS ordering, descendant count, collapse/search, reparent validation, native order, restore (dead tab, sealed windows, duplicates, restart marker), edge pruning/promotion, serialization, content-aware revision hash, depth cap, prefs, plus session-state round-trip (marker + inferred included) |
+| Engine | `node --test` | 45 cases: inference (opener/edge/override priority), orphan, cross-window, cycles, DFS ordering, descendant count, collapse/search, reparent validation, native order, restore (dead tab, sealed windows, duplicates, restart marker), edge pruning/promotion, serialization, content-aware revision hash, depth cap, prefs, plus session-state round-trip (marker + inferred included) |
 | Static | `scripts/check.mjs` | every `.js` parses, JSON valid, manifest files exist, i18n key parity and usage, version consistency, no `<all_urls>`, real scan for remote `<script src>` / `eval` / `new Function` / `fetch` / XHR |
-| Build | `scripts/build.mjs` | zip `dist/tab-tree-v0.1.3.zip`, print sha256/size |
+| Build | `scripts/build.mjs` | zip `dist/tab-tree-v0.2.0.zip`, print sha256/size |
 | E2E | `scripts/smoke.mjs` | real Chrome for Testing: load extension, creation-edge nesting, panel indentation, collapse/expand, close, idle worker reclaim + wake (no restore replay, no badges/footer, edges/overrides preserved), light/dark screenshots (44/44) |
 | Acceptance | `scripts/e2e-real-links.mjs` | real mouse events in Chrome for Testing: A→B, A→C, B→D, Cmd/Ctrl+click background child, opener-less root; asserts snapshot depths and panel indentation (8/8) |
 | Interaction | `scripts/e2e-panel.mjs` | real pointer drag: root→child, child→top-level, cycle rejection toast; per-window panel binding (11/11) |
+| Onboarding | `scripts/e2e-onboarding.mjs` | guide auto-opens, explains native vertical tabs, live preview updates on a real A→B link, first-run hint disappears, panel help button (15/15) |
 | Restart | `scripts/e2e-restart.mjs` | same profile, two real Chrome processes: snapshot persisted, session wiped, A→B→C rebuilt with inferred badges and stats; then the worker is idle-reclaimed and the restore badges/footer survive without re-running the matcher (19/19) |
 | Performance | `scripts/bench-tabs.mjs` | 300 and 500 tabs: rebuild p95, scroll repaint, search filter; DOM stays virtualized (8/8) |
 | Manual | chrome://extensions | load unpacked, open side panel, keyboard, native sort, left/right panel position |

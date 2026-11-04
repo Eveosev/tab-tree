@@ -110,6 +110,73 @@ svg {
   gap: 8px;
 }
 
+.hint-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 10px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--accent-soft);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  user-select: none;
+}
+
+.hint-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.hint-copy strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.hint-copy span {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.hint-learn {
+  flex: none;
+  width: auto;
+  margin: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.hint-learn:hover {
+  background: var(--bg-row-hover);
+  color: var(--text);
+}
+
+.hint-close {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.hint-close:hover {
+  background: var(--bg-row-hover);
+  color: var(--text);
+}
+
 .brand-row {
   display: flex;
   align-items: center;
@@ -544,6 +611,15 @@ svg {
   margin-left: auto;
   color: var(--warn);
   white-space: nowrap;
+}
+
+.restore-info.is-restoring {
+  color: var(--text-muted);
+}
+
+.restore-info[data-partial="true"] {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
 }
 
 .root-drop {

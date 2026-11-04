@@ -1,6 +1,6 @@
 # Tab Tree — 设计说明（中文）
 
-版本 0.1.3 · Chrome 114+ · Manifest V3 · 零构建（原生 ES Modules）
+版本 0.2.0 · Chrome 114+ · Manifest V3 · 零构建（原生 ES Modules）
 
 ## 1. 需求与目标
 
@@ -62,9 +62,10 @@ resolve(tab):
 2. `storage.session` 里写 `sessionMarker`：它在浏览器重启时被清空，Worker 重启时保留。marker、`overrides`、`edges`、`collapsed`、`inferred` 必须通过 `lib/session-state.js` 一起读写；v0.1.2 漏读了 marker、漏存了 `inferred`，导致普通 Worker 唤醒被误判为浏览器重启并重放快照，产生假的 `restored` 徽标和页脚。
 3. `init()` 只有在 **marker 缺失**（或 `runtime.onStartup` 触发）时才尝试恢复；普通 Worker 唤醒不会用旧快照覆盖当前树。
 4. v0.1.2 去掉了“只要存在存活 opener 就跳过恢复”的判断：真实重启后 Chrome 可能额外恢复一个带 opener 的 `about:blank`，旧逻辑会导致整棵树无法恢复。v0.1.3 进一步规定：普通唤醒只从 `storage.local.restoreStats` 读取已有统计，绝不重新运行匹配；新浏览器会话开始时清除旧统计，避免页脚“说谎”。
-5. 由于 Chrome **异步恢复标签页**，Service Worker 可能在标签出现之前就启动，因此恢复改为重试循环：`init()` 立即匹配并应用最佳的部分结果；标签创建/更新/关闭等事件触发 250 ms 防抖重试；每次用更优的匹配替换上一次结果；全部匹配或 15 秒窗口结束后落定并持久化统计。
-6. 窗口按 URL 重叠度配对，窗口内标签按 `normalizedUrl + pinned` 做 LCS 对齐；两端都匹配才迁移父子关系，恢复出的关系打 `restored` 徽标。`inferred` 与 overrides 一起持久化，`init()`/`buildNow()` 会清理失效或已被拖拽覆盖的标记，避免陈旧徽标。
-7. 仍有局限：重复 URL、关闭窗口、极端重排可能匹配错误；可以拖拽修正。
+5. 由于 Chrome **异步恢复标签页**，Service Worker 可能在标签出现之前就启动，因此恢复改为重试循环：`init()` 立即匹配并应用最佳的部分结果；标签创建/更新/关闭等事件触发 250 ms 防抖重试；每次用更优的匹配替换上一次结果；全部匹配立即落定，部分匹配在 8 秒没有改进后落定，硬上限 60 秒（v0.1.3 的 15 秒对大/惰性会话太短）。恢复期间**禁止**把未完成的部分树写回 `storage.local`，避免覆盖唯一一份完整快照。pending 记录写入 `storage.session`，Worker 被回收后下一次唤醒从上次进度继续；用户在恢复窗口内手动拖拽产生的关系优先于后续推断。
+6. 恢复的 pending 进度写入 `storage.session.restorePending`。MV3 Worker 在恢复窗口内被回收时，下一次唤醒会看到该记录并从断点继续匹配，而不是因为 marker 已存在就把这次唤醒当成普通唤醒、放弃剩余的树。恢复只覆盖 `inferred` 的关系；用户在恢复窗口内拖拽产生的 override 永远优先。
+7. 窗口按 URL 重叠度配对，窗口内标签按 `normalizedUrl + pinned` 做 LCS 对齐；两端都匹配才迁移父子关系，恢复出的关系打 `restored` 徽标。`inferred` 与 overrides 一起持久化，`init()`/`buildNow()` 会清理失效或已被拖拽覆盖的标记，避免陈旧徽标。
+8. 仍有局限：重复 URL、关闭窗口、极端重排可能匹配错误；可以拖拽修正。
 
 ## 6. 侧边栏与交互
 
@@ -73,6 +74,15 @@ resolve(tab):
 - 键盘：↑/↓、Home/End、← 折叠或跳到父、→ 展开或跳到第一个子、Enter 激活、Delete 关闭、`/` 搜索。
 - 拖拽：拖到某一行成为其子节点，拖到空白区域成为根；拖拽结果作为 `override` 优先于自动关系。
 - 工具栏“按树排序”可以把原生标签栏按 DFS 顺序重排；置顶标签仍在最前。
+
+## 6.1 首次安装引导与可发现性（v0.2.0）
+
+真实用户反馈“重启后没有树状继承”，截图里其实是 **Chrome 自带的垂直标签栏**——它由浏览器绘制，扩展无法缩进或改写。为避免把两套 UI 混淆：
+
+- `welcome.html` 在 `install`/`update`（每个版本一次）自动打开，展示实时树预览、当前窗口标签数、**已捕获的链接关系数**、重启恢复数、侧边栏支持情况，并提供用户手势触发的 “Open the Tab Tree side panel”。
+- 明确说明 Chrome 原生垂直标签与 Tab Tree 侧边栏的区别，并链接中文排查指南。
+- 侧边栏在没有捕获到任何链接时显示一次性提示；捕获到第一条关系后自动消失。面板新增 `?` 帮助按钮，随时重新打开指南。
+- 指南里直接给出验证步骤：打开 A → 在 A 内点链接 B → B 缩进；Ctrl/Cmd+T 新开 → 与 A 平级。
 
 ## 7. 权限
 
@@ -86,18 +96,19 @@ resolve(tab):
 没有 `<all_urls>`、没有内容脚本、没有扩展发起的网络请求；favicon 由 Chrome 自己加载。
 安装时 Chrome 显示的仍然是正常的“读取您的浏览记录”提示。
 
-## 8. 验证结果（0.1.3）
+## 8. 验证结果（0.2.0）
 
 | 命令 | 结果 |
 | --- | --- |
-| `npm run check` | 21 个文件、manifest 0.1.3、37/37 i18n、无 `<all_urls>`、真实远程代码扫描 |
-| `npm test` | **41/41**：35 个引擎用例 + 6 个 session-state 编解码用例 |
-| `npm run smoke` | **44/44**（真实 Chrome for Testing；含空闲回收 Worker 后“唤醒不重放恢复”回归） |
+| `npm run check` | 26 个文件、manifest 0.2.0、78/78 i18n、无 `<all_urls>`、真实远程代码扫描 |
+| `npm test` | **45/45**：36 个引擎用例 + 9 个 session-state 编解码用例（含 pending 恢复记录） |
+| `npm run smoke` | **44/44**（真实 Chrome for Testing；含折叠/展开、关闭标签、空闲回收 Worker 后“唤醒不重放恢复”回归） |
 | `npm run test:e2e` | **8/8** 真实鼠标点击：A→B、A→C、B→D、Cmd/Ctrl+点击子级、无 opener 根、关闭中间父节点提升子级、面板缩进 |
 | `npm run test:panel` | **11/11** 真实指针拖拽：根→子、子→顶层、循环拒绝 toast；第二个窗口的面板绑定自己的窗口 |
+| `npm run test:onboarding` | **15/15** 首次安装引导：自动打开、原生垂直标签说明、打开侧边栏按钮、实时树预览随真实 A→B 链接更新、首启提示消失、面板帮助按钮 |
 | `npm run test:restart` | **19/19** 两个真实 Chrome 进程：快照落盘、会话存储清空、A→B→C 以 `restored` 徽标恢复；恢复后再空闲回收 Worker，徽标/页脚保持且匹配器不重跑 |
 | `npm run bench` | **8/8**：300 标签重建 p95 14.4 ms、滚动 34.2 ms、搜索 31.4 ms；500 标签 p95 20.6 ms（见 verification.md） |
-| `npm run build` | `dist/tab-tree-v0.1.3.zip`，18 文件 48.1 KiB（含新增 `lib/session-state.js`），sha256 `ce936b59…4623` |
+| `npm run build` | `dist/tab-tree-v0.2.0.zip`，21 文件 63.0 KiB（含 onboarding 三件套），sha256 `dc784862…fbd2` |
 | CI | GitHub Actions 跑 check/test/build |
 
 **已知限制：** 侧边栏在左还是在右由 Chrome 设置决定（`chrome://settings/appearance`），扩展无法强制；恢复仍是启发式，重复 URL 可能匹配错，可拖拽修正。
@@ -110,11 +121,15 @@ resolve(tab):
 | `extension/background.js` | 事件、edge 捕获、构建循环、持久化、消息协议 |
 | `extension/lib/tree-engine.js` | 纯树算法（父子判定、DFS、恢复匹配、升降级） |
 | `extension/sidepanel.js` | 虚拟列表、拖拽、键盘、搜索、设置 |
-| `test/tree-engine.test.js` | 35 个引擎单测 |
+| `test/tree-engine.test.js` | 36 个引擎单测 |
+| `test/session-state.test.js` | 9 个会话编解码单测（marker/edges/overrides/inferred/pending） |
 | `scripts/e2e-real-links.mjs` | 真实点击验收测试 |
 | `scripts/e2e-panel.mjs` | 真实指针拖拽 + 多窗口面板绑定 |
 | `scripts/e2e-restart.mjs` | 真实浏览器重启恢复 |
 | `scripts/bench-tabs.mjs` | 300/500 标签性能基准 |
 | `scripts/smoke.mjs` | 真实浏览器冒烟测试（面板 DOM、折叠、关闭、Worker 重启） |
 | `docs/design.md` | 完整英文技术设计 |
+| `docs/troubleshooting.md` | 中文排查指南：原生垂直标签 vs 侧边栏、恢复诊断 |
+| `extension/welcome.html/.js/.css` | 安装/更新引导、实时树预览、自检、打开侧边栏 |
+| `scripts/e2e-onboarding.mjs` | 首次安装引导 + 实时链接预览 E2E（15/15） |
 | `docs/research.md` | 竞品与决策调研 |

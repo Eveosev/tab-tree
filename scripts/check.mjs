@@ -57,6 +57,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(extension, 'manifest.json'
 const referenced = [
   manifest.background?.service_worker,
   manifest.side_panel?.default_path,
+  manifest.options_ui?.page,
   ...Object.values(manifest.icons || {}),
   ...Object.values(manifest.action?.default_icon || {}),
 ].filter(Boolean);
@@ -92,7 +93,7 @@ for (const key of Object.keys(zhMessages)) {
 }
 
 const usedKeys = new Set();
-for (const relative of ['sidepanel.js', 'sidepanel.html']) {
+for (const relative of ['sidepanel.js', 'sidepanel.html', 'welcome.js', 'welcome.html']) {
   const content = fs.readFileSync(path.join(extension, relative), 'utf8');
   for (const match of content.matchAll(/\bt\('(\w+)'\)/g)) usedKeys.add(match[1]);
   for (const match of content.matchAll(/data-i18n(?:-placeholder)?="(\w+)"/g)) usedKeys.add(match[1]);

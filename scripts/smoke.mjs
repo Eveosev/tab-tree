@@ -338,6 +338,18 @@ try {
   const sw = worker.client;
   clients.push(sw);
   const extensionId = new URL(swTarget.url).host;
+  // v0.2.0 opens the setup guide once per profile. Close it so this suite
+  // measures the demo tree (and its screenshots) without an onboarding tab.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await sw
+      .evaluate(`chrome.tabs.query({}).then((tabs) => Promise.all(
+        tabs.filter((tab) => String(tab.url || '').endsWith('/welcome.html')).map((tab) => chrome.tabs.remove(tab.id))
+      ))`)
+      .catch(() => {});
+    // `onInstalled` creates the guide asynchronously; give it a beat so the
+    // second pass can close a tab that was created after the first pass.
+    await sleep(300);
+  }
   const swErrors = [];
   sw.on('Runtime.exceptionThrown', (params) => swErrors.push(params.exceptionDetails?.text || 'worker exception'));
   if (process.env.DEBUG_SW) {
@@ -576,6 +588,8 @@ try {
   }
 
   // Collapse the root through the actual twisty button, then expand it back.
+  // Assert by tab title, not by total row count: Chrome's onboarding tab and
+  // the panel tab itself are real tabs, so the absolute count is not stable.
   const clickedCollapse = await panel.evaluate(`(() => {
     const row = [...document.querySelectorAll('.row')].find((item) => {
       const title = item.querySelector('.title')?.textContent || '';
@@ -586,14 +600,35 @@ try {
     return true;
   })()`);
   check('root twisty is clickable', clickedCollapse === true);
+  const collapseTitles = async () =>
+    JSON.parse(
+      await panel.evaluate(
+        'JSON.stringify([...document.querySelectorAll(".row .title")].map((title) => title.textContent || ""))',
+      ),
+    );
   await waitFor(
-    async () => (await panel.evaluate('document.querySelectorAll(".row").length')) < 6,
+    async () => {
+      const titles = await collapseTitles();
+      return (
+        titles.some((title) => title.includes('Tree Demo — Root')) &&
+        !titles.some(
+          (title) =>
+            title.includes('Tree Demo — Docs') ||
+            title.includes('Tree Demo — Article') ||
+            title.includes('Tree Demo — Comments'),
+        )
+      );
+    },
     { timeout: 8000, label: 'collapsed rows' },
   );
-  const collapsedRows = JSON.parse(
-    await panel.evaluate('JSON.stringify([...document.querySelectorAll(".row")].map((row) => row.dataset.depth))'),
+  const collapsedTitles = await collapseTitles();
+  check(
+    'collapse hides descendants',
+    !collapsedTitles.some(
+      (title) => title.includes('Tree Demo — Docs') || title.includes('Tree Demo — Article'),
+    ),
+    `${collapsedTitles.length} rows visible`,
   );
-  check('collapse hides descendants', collapsedRows.length < 6, `${collapsedRows.length} rows visible`);
   const collapsedInWorker = await waitFor(
     async () => {
       const raw = await sw.evaluate('JSON.stringify(globalThis.__TAB_TREE_DEBUG__?.snapshot?.() || null)');
@@ -615,8 +650,15 @@ try {
     const row = [...document.querySelectorAll('.row')].find((item) => Number(item.dataset.depth) === 0 && (item.querySelector('.title')?.textContent || '').includes('Tree Demo — Root'));
     row?.querySelector('.twisty')?.click();
   })()`);
+  await waitFor(
+    async () => {
+      const titles = await collapseTitles();
+      return titles.some((title) => title.includes('Tree Demo — Comments'));
+    },
+    { timeout: 8000, label: 'expanded rows' },
+  );
   rows = await waitForRows(6);
-  check('expand restores the full subtree', rows.length >= 6);
+  check('expand restores the full subtree', rows.some((row) => row.title.includes('Tree Demo — Comments')));
 
   // Close a tab from the panel and verify it leaves both UI and worker.
   const closed = await panel.evaluate(`(() => {

@@ -12,6 +12,7 @@ const ROW_HEIGHT = 32;
 const OVERSCAN = 8;
 const INDENT = 16;
 const PORT_NAME = 'tab-tree';
+const HINT_KEY = 'tab-tree:hint-dismissed:v1';
 const isExtension = typeof chrome !== 'undefined' && Boolean(chrome.runtime?.id);
 
 const ICONS = {
@@ -66,6 +67,13 @@ const FALLBACK_STRINGS = {
   error: 'Something went wrong',
   notConnected: 'Tab Tree background is starting…',
   confirmClose: 'Close',
+  help: 'Help & setup',
+  linkHintTitle: 'Links open as children here',
+  linkHintBody: 'Click a link inside a page and the new tab nests under that page.',
+  learnMore: 'Learn more',
+  dismiss: 'Dismiss',
+  restoringLinks: 'Restoring tabs…',
+  restorePartial: 'Restore incomplete',
 };
 
 const state = {
@@ -107,7 +115,11 @@ const el = {
   windowSelect: document.getElementById('windowSelect'),
   btnCollapse: document.getElementById('btnCollapse'),
   btnSort: document.getElementById('btnSort'),
+  btnHelp: document.getElementById('btnHelp'),
   btnSettings: document.getElementById('btnSettings'),
+  hint: document.getElementById('hint'),
+  hintLearn: document.getElementById('hintLearn'),
+  hintDismiss: document.getElementById('hintDismiss'),
   settings: document.getElementById('settings'),
   prefCloseChildren: document.getElementById('prefCloseChildren'),
   prefAutoSort: document.getElementById('prefAutoSort'),
@@ -142,10 +154,13 @@ function applyI18n() {
   el.btnCollapse.setAttribute('aria-label', t('collapseAll'));
   el.btnSort.title = t('sortTabsHint');
   el.btnSort.setAttribute('aria-label', t('sortTabs'));
+  el.btnHelp.title = t('help');
+  el.btnHelp.setAttribute('aria-label', t('help'));
   el.btnSettings.title = t('settings');
   el.btnSettings.setAttribute('aria-label', t('settings'));
   el.searchClear.setAttribute('aria-label', t('close'));
   el.windowSelect.setAttribute('aria-label', t('window'));
+  el.hintDismiss.setAttribute('aria-label', t('dismiss'));
 }
 
 function showToast(message, duration = 3200) {
@@ -344,16 +359,70 @@ function render() {
   el.status.textContent = collapsed ? `${prefix} · ${collapsed} ▸` : prefix;
 
   const restore = snapshot.restore?.stats;
-  if (restore && restore.relations > 0) {
+  const restoring = snapshot.restoring;
+  delete el.restoreInfo.dataset.partial;
+  if (restoring && restoring.total > 0) {
+    el.restoreInfo.textContent = `${t('restoringLinks')} ${restoring.matchedTabs}/${restoring.total}`;
+    el.restoreInfo.title = `${restoring.relations} link(s) matched so far`;
+    el.restoreInfo.classList.add('is-restoring');
+  } else if (restore && restore.relations > 0) {
+    el.restoreInfo.classList.remove('is-restoring');
     el.restoreInfo.textContent = `${restore.relations} ${t('linksRestored')}`;
     el.restoreInfo.title = `${restore.matchedTabs}/${restore.oldNodes} tabs matched across ${restore.windows} window(s)`;
+    if (restore.partial) {
+      el.restoreInfo.dataset.partial = 'true';
+      el.restoreInfo.title = `${t('restorePartial')} — ${el.restoreInfo.title}`;
+    }
   } else {
+    el.restoreInfo.classList.remove('is-restoring');
     el.restoreInfo.textContent = '';
     el.restoreInfo.title = '';
   }
 
+  updateHint();
   updateCollapseButton();
   renderSlice(true);
+}
+
+/**
+ * First-run hint: if this browser has no captured/restored parent links yet,
+ * explain that link-opened tabs nest here (and that Chrome's own tab strip is a
+ * different UI). It disappears by itself as soon as the first link is caught.
+ */
+function updateHint() {
+  if (!el.hint) return;
+  const stats = state.snapshot?.linkStats;
+  const restoreRelations = state.snapshot?.restore?.stats?.relations || 0;
+  const restoringRelations = state.snapshot?.restoring?.relations || 0;
+  let dismissed = false;
+  try {
+    dismissed = localStorage.getItem(HINT_KEY) === '1';
+  } catch {
+    dismissed = false;
+  }
+  const show =
+    !dismissed &&
+    Boolean(state.snapshot) &&
+    (stats?.parented ?? 0) === 0 &&
+    restoreRelations === 0 &&
+    restoringRelations === 0;
+  el.hint.hidden = !show;
+}
+
+async function openWelcome() {
+  if (!isExtension) return;
+  try {
+    const url = chrome.runtime.getURL('welcome.html');
+    const tabs = await chrome.tabs.query({ url });
+    if (tabs.length > 0) {
+      await chrome.tabs.update(tabs[0].id, { active: true });
+      await chrome.windows.update(tabs[0].windowId, { focused: true }).catch(() => {});
+      return;
+    }
+    await chrome.tabs.create({ url, active: true });
+  } catch (error) {
+    fail(error);
+  }
 }
 
 function updateCollapseButton() {
@@ -1013,6 +1082,23 @@ function toggleSettings(open) {
 }
 
 el.btnSettings.addEventListener('click', () => toggleSettings());
+
+el.btnHelp.addEventListener('click', () => {
+  openWelcome().catch(fail);
+});
+
+el.hintLearn.addEventListener('click', () => {
+  openWelcome().catch(fail);
+});
+
+el.hintDismiss.addEventListener('click', () => {
+  try {
+    localStorage.setItem(HINT_KEY, '1');
+  } catch {
+    /* private mode / storage disabled: hide for this view only */
+  }
+  el.hint.hidden = true;
+});
 
 el.prefCloseChildren.addEventListener('change', () => {
   const next = { ...state.prefs, closeChildrenWithParent: el.prefCloseChildren.checked };

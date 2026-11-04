@@ -36,6 +36,7 @@ const STORAGE = {
   restoreSnapshot: 'restoreSnapshot',
   restoreStats: 'restoreStats',
   sessionMarker: 'sessionMarker',
+  welcomeVersion: 'welcomeVersion',
 };
 
 const state = {
@@ -116,6 +117,7 @@ async function loadState() {
     restoreSnapshot: local[STORAGE.restoreSnapshot] || null,
     restoreStats: local[STORAGE.restoreStats] || null,
     sessionMarker: session.sessionMarker,
+    restorePending: session.restorePending,
   };
 }
 
@@ -144,6 +146,11 @@ function schedulePersistSnapshot(snapshot) {
 
 function persistSnapshot(snapshot = state.snapshot) {
   if (!snapshot) return;
+  // While a restart reconciliation is running, the on-disk snapshot is the
+  // only complete record of the previous session. A partial rebuild (Chrome
+  // may not have restored every tab yet) must never overwrite it; the final
+  // repaint after `finalizeRestore()` persists the merged result instead.
+  if (state.pendingRestore) return;
   chrome.storage.local
     .set({ [STORAGE.restoreSnapshot]: serializeRestoreSnapshot(snapshot) })
     .catch((error) => console.warn('[tab-tree] snapshot persist failed', error));
@@ -294,10 +301,20 @@ async function buildNow(reason = 'event') {
     snapshot.version = SNAPSHOT_VERSION;
     snapshot.restore = state.restore;
     snapshot.reason = reason;
+    // Progress is exposed to the panel so a 20-tab restore never looks frozen.
+    snapshot.restoring = state.pendingRestore
+      ? {
+          matchedTabs: state.pendingRestore.best?.stats.matchedTabs ?? 0,
+          total: state.pendingRestore.saved?.nodes?.length ?? 0,
+          relations: state.pendingRestore.best?.stats.relations ?? 0,
+        }
+      : null;
 
     const changed = !state.snapshot || state.snapshot.revision !== snapshot.revision;
     state.snapshot = snapshot;
-    if (changed) broadcast({ type: 'tree.changed', snapshot });
+    // `restoring` is not part of the revision hash (it is transient), yet the
+    // footer must repaint during the reconciliation window.
+    if (changed || state.pendingRestore) broadcast({ type: 'tree.changed', snapshot });
     schedulePersistSnapshot(snapshot);
     if (changed) saveSessionState();
   } catch (error) {
@@ -340,24 +357,56 @@ function post(port, message) {
 /* Init (also used as the post-restore reconciliation)                        */
 /* -------------------------------------------------------------------------- */
 
-const RESTORE_WINDOW_MS = 15_000;
+// Chrome can take a long time to restore a big, lazy-loaded session (20+ tabs,
+// discarded tabs, several windows). 15 s was too short and produced a flat
+// tree that only looked correct after a manual refresh; 60 s is the hard upper
+// bound, while a session that is fully matched finalizes immediately and a
+// partial session settles once no better match has appeared for 8 s.
+const RESTORE_WINDOW_MS = 60_000;
+const RESTORE_SETTLE_MS = 8_000;
 
 /**
  * Chrome restores the previous session's tabs asynchronously and does not
  * preserve `openerTabId` across the restart. The saved snapshot is therefore
  * matched against live tabs; because `init()` can run before the tabs appear,
- * attempts are retried from tab events until every saved tab is matched or a
- * 15 s window expires.
+ * attempts are retried from tab events until every saved tab is matched or the
+ * restore window expires.
+ *
+ * `resume` is used when a previous worker was reclaimed during that window:
+ * its persisted progress is picked up instead of abandoning the tree.
  */
-function beginRestore(saved, tabs) {
+function beginRestore(saved, tabs, { resume = false, previousStats = null } = {}) {
+  // On a resume, `inferred` overrides are the ones an earlier attempt applied.
+  // Only those may be replaced; manual drag overrides must survive.
+  const appliedIds = resume
+    ? new Set([...state.inferred].filter((tabId) => state.overrides.has(tabId)))
+    : new Set();
   state.pendingRestore = {
     saved,
-    appliedIds: new Set(),
-    best: null,
+    appliedIds,
+    // Seeding `best` with the reclaimed worker's progress prevents a resume
+    // from replacing a good partial result with a worse early match.
+    best:
+      resume && previousStats
+        ? { stats: previousStats, overrides: new Map(), inferred: new Set() }
+        : null,
+    savedAt: Number.isFinite(saved?.savedAt) ? saved.savedAt : null,
+    startedAt: Date.now(),
+    total: Array.isArray(saved?.nodes) ? saved.nodes.length : 0,
     timer: null,
     finalTimer: null,
+    settleTimer: null,
   };
   state.pendingRestore.finalTimer = setTimeout(() => finalizeRestore('deadline'), RESTORE_WINDOW_MS);
+  if (state.pendingRestore.best) {
+    // Resumed with a usable partial result: settle on it unless a later event
+    // improves it, instead of keeping the footer in "restoring" for 60 s.
+    state.pendingRestore.settleTimer = setTimeout(() => finalizeRestore('settled'), RESTORE_SETTLE_MS);
+  }
+  // Any debounced write still queued from before the restart must not land on
+  // top of the saved snapshot while reconciliation is in progress.
+  clearTimeout(persistTimer);
+  saveSessionState({ immediate: true });
   applyRestoreAttempt(tabs);
 }
 
@@ -386,21 +435,40 @@ function applyRestoreAttempt(tabs) {
   // Replace (not merge) the relations applied by the previous attempt so a
   // later LCS alignment can correct an early, partial match.
   for (const tabId of pending.appliedIds) {
+    // If the user dragged this row since the previous attempt, `inferred` was
+    // cleared by `reparent()`. Keep that override: a manual drag made during
+    // the recovery window is newer and more trustworthy than the matcher.
+    if (!state.inferred.has(tabId)) continue;
     state.overrides.delete(tabId);
     state.inferred.delete(tabId);
   }
   pending.appliedIds.clear();
   for (const [tabId, parentId] of matched.overrides) {
+    // A user drag made after the restart is newer and more trustworthy than
+    // the snapshot guess. Restore only fills relations the user has not
+    // touched; `inferred` marks the ones restore itself wrote.
+    const manual = state.overrides.has(tabId) && !state.inferred.has(tabId);
+    if (manual) continue;
     state.overrides.set(tabId, parentId);
     pending.appliedIds.add(tabId);
   }
-  for (const tabId of matched.inferred) state.inferred.add(tabId);
+  for (const tabId of matched.inferred) {
+    if (pending.appliedIds.has(tabId)) state.inferred.add(tabId);
+  }
   pending.best = matched;
-  state.restore = { appliedAt: Date.now(), stats: matched.stats };
+  const partial = matched.stats.matchedTabs < pending.total;
+  state.restore = { appliedAt: Date.now(), stats: { ...matched.stats, partial } };
   saveSessionState({ immediate: true });
-  persistRestoreStats(matched.stats);
+  persistRestoreStats(state.restore.stats);
 
-  if (matched.stats.matchedTabs >= pending.saved.nodes.length) finalizeRestore('complete');
+  clearTimeout(pending.settleTimer);
+  pending.settleTimer = null;
+  if (matched.stats.matchedTabs >= pending.total) {
+    finalizeRestore('complete');
+  } else {
+    // No better match after a quiet period: stop claiming "restoring" forever.
+    pending.settleTimer = setTimeout(() => finalizeRestore('settled'), RESTORE_SETTLE_MS);
+  }
   return true;
 }
 
@@ -428,12 +496,24 @@ function finalizeRestore(reason) {
   if (!pending) return;
   clearTimeout(pending.timer);
   clearTimeout(pending.finalTimer);
+  clearTimeout(pending.settleTimer);
+  clearTimeout(persistTimer);
   state.pendingRestore = null;
-  if (!pending.best) return;
-  persistRestoreStats(pending.best.stats);
+  if (!pending.best) {
+    // Nothing matched at all. Clear the pending marker so a later worker wake
+    // does not resurrect an obsolete reconciliation, and repaint once so the
+    // footer stops showing "Restoring…".
+    saveSessionState({ immediate: true });
+    scheduleBuild(`restore-${reason}`, 0);
+    return;
+  }
+  const partial = pending.best.stats.matchedTabs < pending.total;
+  const stats = { ...pending.best.stats, partial };
+  state.restore = { appliedAt: Date.now(), stats };
+  persistRestoreStats(stats);
   saveSessionState({ immediate: true });
   scheduleBuild(`restore-${reason}`, 0);
-  console.info('[tab-tree] restored session', pending.best.stats);
+  console.info('[tab-tree] restored session', stats);
 }
 
 async function init() {
@@ -460,10 +540,6 @@ async function init() {
     if (!liveIds.has(tabId) || !state.overrides.has(tabId)) state.inferred.delete(tabId);
   }
 
-  // Persist the union immediately so a capture that arrived during load is not
-  // lost if the worker dies before the debounce fires.
-  saveSessionState({ immediate: true });
-
   // `storage.session` survives service-worker restarts but is wiped when the
   // browser restarts. A missing marker (or an onStartup wake) is therefore the
   // restart signal; a plain worker wake must never re-apply the snapshot over
@@ -471,14 +547,43 @@ async function init() {
   // Chrome can restore one incidental opener (e.g. an extra about:blank tab),
   // and that must not suppress the whole restore.
   const isRestart = newBrowserSession || state.startupSignal;
+  const saved = local.restoreSnapshot;
+  const pendingMeta = local.restorePending;
+  const canResumePending =
+    !isRestart &&
+    Boolean(pendingMeta && saved) &&
+    (pendingMeta.savedAt === null || pendingMeta.savedAt === saved.savedAt) &&
+    pendingMeta.matchedTabs < (Array.isArray(saved.nodes) ? saved.nodes.length : 0);
+
   if (isRestart) {
-    if (local.restoreSnapshot) beginRestore(local.restoreSnapshot, tabs);
+    if (saved) beginRestore(saved, tabs);
+  } else if (canResumePending) {
+    // The MV3 worker was reclaimed in the middle of the restart restore. The
+    // marker says "same browser session", but the persisted pending record
+    // proves the tree is still being rebuilt; resume instead of finalizing a
+    // flat partial forest.
+    console.info('[tab-tree] resuming interrupted restore', pendingMeta);
+    state.restore = local.restoreStats || null;
+    beginRestore(saved, tabs, {
+      resume: true,
+      previousStats: {
+        matchedTabs: pendingMeta.matchedTabs || 0,
+        relations: pendingMeta.relations || 0,
+        oldNodes: pendingMeta.oldNodes || 0,
+      },
+    });
   } else if (local.restoreStats) {
     // A worker wake inside the same browser session: keep showing the summary
     // of the restore that happened when the session started, but never re-run
     // the snapshot matcher (that would mark live tabs as "restored" again).
     state.restore = local.restoreStats;
   }
+
+  // Persist the union immediately so a capture that arrived during load is not
+  // lost if the worker dies before the debounce fires. `beginRestore()` above
+  // already wrote the pending record, so this write carries it through instead
+  // of momentarily clearing it.
+  saveSessionState({ immediate: true });
 
   if (state.pendingRestore) {
     // `beginRestore` already queried the tabs; rebuild once now and let tab
@@ -748,13 +853,45 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
 });
 chrome.windows.onRemoved.addListener(rebuild);
 
+/* -------------------------------------------------------------------------- */
+/* Onboarding                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Open the setup guide once per installed version. Without this, Chrome hides
+ * the new side panel behind the toolbar puzzle menu and users understandably
+ * mistake Chrome's own vertical-tab strip for this extension's tree.
+ */
+async function maybeOpenWelcome(reason) {
+  const version = chrome.runtime.getManifest().version;
+  const stored = await chrome.storage.local.get(STORAGE.welcomeVersion);
+  if (stored[STORAGE.welcomeVersion] === version) return;
+  await chrome.storage.local.set({ [STORAGE.welcomeVersion]: version });
+  if (reason !== 'install' && reason !== 'update') return;
+
+  const url = chrome.runtime.getURL('welcome.html');
+  const existing = await chrome.tabs.query({ url }).catch(() => []);
+  if (existing.length > 0) {
+    const tab = existing[0];
+    await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+    await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+    return;
+  }
+  await chrome.tabs
+    .create({ url, active: true })
+    .catch((error) => console.warn('[tab-tree] welcome page failed', error));
+}
+
 chrome.runtime.onStartup.addListener(() => {
   state.startupSignal = true;
   scheduleBuild('startup');
 });
 chrome.runtime.onInstalled.addListener((details) => {
   scheduleBuild('installed');
-  if (details.reason === 'install') console.info('[tab-tree] installed');
+  console.info('[tab-tree] installed', details.reason);
+  maybeOpenWelcome(details.reason).catch((error) =>
+    console.warn('[tab-tree] welcome failed', error),
+  );
 });
 chrome.runtime.onSuspend.addListener(() => {
   if (state.snapshot) persistSnapshot(state.snapshot);
@@ -766,6 +903,18 @@ chrome.runtime.onSuspend.addListener(() => {
 if (chrome.sidePanel?.setPanelBehavior) {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => {
     console.warn('[tab-tree] sidePanel behavior failed', error);
+  });
+}
+// Belt-and-braces fallback: if `setPanelBehavior` is unavailable/ignored (older
+// Chrome, enterprise policy, or a future API change), an explicit action-click
+// listener still opens the panel. When the behavior works, Chrome handles the
+// click itself and this listener is simply not invoked.
+if (chrome.action?.onClicked) {
+  chrome.action.onClicked.addListener((tab) => {
+    if (!chrome.sidePanel?.open || !Number.isInteger(tab?.windowId)) return;
+    chrome.sidePanel.open({ windowId: tab.windowId }).catch((error) => {
+      console.warn('[tab-tree] sidePanel.open failed', error);
+    });
   });
 }
 

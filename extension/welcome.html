@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tab Tree</title>
+    <link rel="stylesheet" href="welcome.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <header class="hero">
+        <img src="icons/icon48.png" alt="" width="48" height="48" />
+        <div>
+          <p class="eyebrow">Tab Tree <span id="version" class="version"></span></p>
+          <h1 data-i18n="welcomeTitle">Tab Tree is installed</h1>
+          <p class="lead" data-i18n="welcomeLead">
+            Tabs you open from a link become children of the page that opened them. The tree lives in Chrome's
+            side panel.
+          </p>
+        </div>
+      </header>
+
+      <section class="callout warning">
+        <div class="callout-icon" aria-hidden="true">!</div>
+        <div>
+          <h2 data-i18n="welcomeNativeTitle">Chrome's built-in vertical tabs are not Tab Tree</h2>
+          <p data-i18n="welcomeNativeBody">
+            Chrome's own left-hand tab strip (the one with tab groups) cannot be restyled or indented by any
+            extension. Tab Tree is a separate side panel. Look for the blue Tab Tree header and the search box.
+          </p>
+        </div>
+      </section>
+
+      <section class="actions">
+        <button id="openPanel" class="primary" type="button" data-i18n="welcomeOpenPanel">
+          Open the Tab Tree side panel
+        </button>
+        <button id="openFull" class="secondary" type="button" data-i18n="welcomeOpenFull">
+          Open the full-page tree
+        </button>
+      </section>
+      <p id="panelNote" class="panel-note" hidden></p>
+
+      <section class="grid">
+        <div class="card">
+          <div class="card-head">
+            <h2 data-i18n="welcomeTreeTitle">Your current tabs</h2>
+            <span id="previewCount" class="muted"></span>
+          </div>
+          <div id="preview" class="preview-tree" aria-live="polite"></div>
+          <p id="previewEmpty" class="preview-empty" hidden data-i18n="welcomeNoTabs">
+            No tabs in this window yet.
+          </p>
+          <p class="hint" data-i18n="welcomePreviewHint">
+            This is the same tree the side panel shows. Rows indented to the right were opened from the row
+            above them.
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2 data-i18n="welcomeCheckTitle">Setup check</h2>
+          </div>
+          <ul class="checks">
+            <li>
+              <span class="dot ok" aria-hidden="true"></span>
+              <span data-i18n="welcomeCheckVersion">Extension version</span>
+              <b id="checkVersion">—</b>
+            </li>
+            <li>
+              <span id="dotTabs" class="dot" aria-hidden="true"></span>
+              <span data-i18n="welcomeCheckTabs">Tabs in this window</span>
+              <b id="checkTabs">—</b>
+            </li>
+            <li>
+              <span id="dotLinks" class="dot" aria-hidden="true"></span>
+              <span data-i18n="welcomeCheckLinks">Tracked link relationships</span>
+              <b id="checkLinks">—</b>
+            </li>
+            <li>
+              <span id="dotRestore" class="dot" aria-hidden="true"></span>
+              <span data-i18n="welcomeCheckRestore">Links restored after restart</span>
+              <b id="checkRestore">—</b>
+            </li>
+            <li>
+              <span id="dotPanel" class="dot" aria-hidden="true"></span>
+              <span data-i18n="welcomeCheckPanel">Side panel support</span>
+              <b id="checkPanel">—</b>
+            </li>
+          </ul>
+          <p id="setupHint" class="hint" data-i18n="welcomeNoLinksHint">
+            No link relationships yet. Open a page, then click a link inside it (or Cmd/Ctrl-click): the new tab
+            will appear indented under that page here.
+          </p>
+        </div>
+      </section>
+
+      <section class="card steps">
+        <h2 data-i18n="welcomeStepsTitle">Try it in 30 seconds</h2>
+        <ol>
+          <li data-i18n="welcomeStep1">Open any page (call it A).</li>
+          <li data-i18n="welcomeStep2">
+            Click a normal link inside A. The new tab becomes a child of A in the Tab Tree panel.
+          </li>
+          <li data-i18n="welcomeStep3">
+            Open a tab with Cmd/Ctrl+T or the address bar: it stays top-level, next to A.
+          </li>
+        </ol>
+        <p class="hint" data-i18n="welcomeRestoreHint">
+          Restarting Chrome? Tab Tree rebuilds the tree from a local snapshot. Tabs that were already open
+          before installation have no known opener and start as top-level rows; drag them onto a parent to fix
+          that in one gesture.
+        </p>
+      </section>
+
+      <footer class="foot">
+        <button id="reopen" class="link" type="button" data-i18n="welcomeReopen">
+          Keep this guide open
+        </button>
+        <button id="closeTab" class="link" type="button" data-i18n="welcomeClose">Close this tab</button>
+        <span class="foot-spacer"></span>
+        <span class="muted" data-i18n="welcomeFooter">Local-only · no account · no telemetry</span>
+      </footer>
+    </main>
+    <script type="module" src="welcome.js"></script>
+  </body>
+</html>

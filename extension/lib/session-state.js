@@ -18,10 +18,49 @@ export const SESSION_KEYS = Object.freeze([
   'collapsed',
   'inferred',
   'sessionMarker',
+  'restorePending',
 ]);
 
 /**
- * @param {{overrides?: Map<number, number|null>, edges?: Map<number, number>, collapsed?: Set<number>, inferred?: Set<number>}} state
+ * Persist only the serialisable progress of a restart reconciliation. Timers
+ * and the matcher result stay in memory; if the MV3 worker is reclaimed mid
+ * restore, this tiny record lets the next worker resume where it stopped
+ * instead of treating the wake as a normal session and abandoning the tree.
+ *
+ * @param {Object|null|undefined} pending
+ */
+export function encodeRestorePending(pending) {
+  if (!pending || typeof pending !== 'object') return null;
+  const stats = pending.best?.stats || {};
+  return {
+    savedAt: Number.isFinite(pending.savedAt) ? pending.savedAt : null,
+    startedAt: Number.isFinite(pending.startedAt) ? pending.startedAt : null,
+    matchedTabs: Number.isInteger(stats.matchedTabs) ? stats.matchedTabs : 0,
+    oldNodes: Number.isInteger(stats.oldNodes)
+      ? stats.oldNodes
+      : Number.isInteger(pending.total)
+        ? pending.total
+        : 0,
+    relations: Number.isInteger(stats.relations) ? stats.relations : 0,
+  };
+}
+
+/**
+ * @param {Object} raw
+ * @returns {null|{savedAt: number|null, startedAt: number|null, matchedTabs: number, oldNodes: number, relations: number}}
+ */
+export function decodeRestorePending(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const savedAt = Number.isFinite(raw.savedAt) ? raw.savedAt : null;
+  const startedAt = Number.isFinite(raw.startedAt) ? raw.startedAt : null;
+  const matchedTabs = Number.isInteger(raw.matchedTabs) && raw.matchedTabs >= 0 ? raw.matchedTabs : 0;
+  const oldNodes = Number.isInteger(raw.oldNodes) && raw.oldNodes >= 0 ? raw.oldNodes : 0;
+  const relations = Number.isInteger(raw.relations) && raw.relations >= 0 ? raw.relations : 0;
+  return { savedAt, startedAt, matchedTabs, oldNodes, relations };
+}
+
+/**
+ * @param {{overrides?: Map<number, number|null>, edges?: Map<number, number>, collapsed?: Set<number>, inferred?: Set<number>, pendingRestore?: Object|null}} state
  */
 export function encodeSessionState(state = {}) {
   return {
@@ -29,12 +68,13 @@ export function encodeSessionState(state = {}) {
     edges: [...(state.edges || new Map()).entries()],
     collapsed: [...(state.collapsed || new Set())],
     inferred: [...(state.inferred || new Set())],
+    restorePending: encodeRestorePending(state.pendingRestore),
   };
 }
 
 /**
  * @param {Object} raw value returned by `chrome.storage.session.get(SESSION_KEYS)`
- * @returns {{overrides: Map<number, number|null>, edges: Map<number, number>, collapsed: Set<number>, inferred: Set<number>, sessionMarker: number|null}}
+ * @returns {{overrides: Map<number, number|null>, edges: Map<number, number>, collapsed: Set<number>, inferred: Set<number>, sessionMarker: number|null, restorePending: Object|null}}
  */
 export function decodeSessionState(raw = {}) {
   const overrides = new Map();
@@ -72,6 +112,7 @@ export function decodeSessionState(raw = {}) {
     collapsed,
     inferred,
     sessionMarker: Number.isInteger(raw.sessionMarker) ? raw.sessionMarker : null,
+    restorePending: decodeRestorePending(raw.restorePending),
   };
 }
 

@@ -22,6 +22,9 @@
             <button id="btnSort" class="icon-btn" type="button" title="Sort tabs by tree" aria-label="Sort tabs by tree">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" /></svg>
             </button>
+            <button id="btnHelp" class="icon-btn" type="button" title="Help &amp; setup" aria-label="Help &amp; setup">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.6 2.6 0 0 1 5.1.6c0 1.8-2.6 2.1-2.6 4" /><path d="M12 17h.01" /></svg>
+            </button>
             <button id="btnSettings" class="icon-btn" type="button" title="Settings" aria-label="Settings" aria-expanded="false">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" />
@@ -37,6 +40,15 @@
           <span id="count" class="count" aria-live="polite"></span>
         </div>
       </header>
+
+      <div id="hint" class="hint-banner" hidden>
+        <div class="hint-copy">
+          <strong data-i18n="linkHintTitle">Links open as children here</strong>
+          <span data-i18n="linkHintBody">Click a link inside a page and the new tab nests under that page.</span>
+        </div>
+        <button id="hintLearn" class="hint-learn" type="button" data-i18n="learnMore">Learn more</button>
+        <button id="hintDismiss" class="hint-close" type="button" aria-label="Dismiss">×</button>
+      </div>
 
       <main id="tree" class="tree" role="tree" aria-label="Tab tree" tabindex="0"></main>
       <div id="empty" class="empty" hidden>

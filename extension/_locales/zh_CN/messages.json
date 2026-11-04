@@ -154,5 +154,169 @@
         "content": "$2"
       }
     }
+  },
+  "welcomeTitle": {
+    "message": "Tab Tree 已安装",
+    "description": "首次使用引导标题。"
+  },
+  "welcomeLead": {
+    "message": "从链接打开的新标签页会成为打开它的页面的子节点；整棵树显示在 Chrome 侧边栏中。",
+    "description": "首次使用引导说明。"
+  },
+  "welcomeNativeTitle": {
+    "message": "Chrome 自带的垂直标签栏不是 Tab Tree",
+    "description": "引导提示标题。"
+  },
+  "welcomeNativeBody": {
+    "message": "Chrome 左侧自带的标签栏（带标签组的那一个）无法被任何扩展改写或缩进。Tab Tree 是一个独立的侧边栏：请认准蓝色的 Tab Tree 标题和搜索框。",
+    "description": "引导提示正文。"
+  },
+  "welcomeOpenPanel": {
+    "message": "打开 Tab Tree 侧边栏",
+    "description": "首次使用主按钮。"
+  },
+  "welcomeOpenFull": {
+    "message": "打开整页树状视图",
+    "description": "首次使用次按钮。"
+  },
+  "welcomeTreeTitle": {
+    "message": "当前标签页",
+    "description": "实时预览标题。"
+  },
+  "welcomeNoTabs": {
+    "message": "这个窗口还没有标签页。",
+    "description": "实时预览为空。"
+  },
+  "welcomePreviewHint": {
+    "message": "这就是侧边栏里显示的树：向右缩进的行是从上一行页面中打开的。",
+    "description": "预览说明。"
+  },
+  "welcomeCheckTitle": {
+    "message": "安装检查",
+    "description": "诊断标题。"
+  },
+  "welcomeCheckVersion": {
+    "message": "扩展版本",
+    "description": "诊断项。"
+  },
+  "welcomeCheckTabs": {
+    "message": "当前窗口标签数",
+    "description": "诊断项。"
+  },
+  "welcomeCheckLinks": {
+    "message": "已捕获的链接关系",
+    "description": "诊断项。"
+  },
+  "welcomeCheckRestore": {
+    "message": "重启后恢复的链接",
+    "description": "诊断项。"
+  },
+  "welcomeCheckPanel": {
+    "message": "侧边栏支持",
+    "description": "诊断项。"
+  },
+  "welcomeNoLinksHint": {
+    "message": "还没有任何链接关系。请先打开一个页面，再点击页面里的链接（或 Cmd/Ctrl+点击），新标签页就会缩进显示在该页面下面。",
+    "description": "没有捕获到链接时的提示。"
+  },
+  "welcomeLinksHint": {
+    "message": "链接捕获正常。在页面里点击链接，新标签页就会嵌套在该页面下面。",
+    "description": "已有链接时的提示。"
+  },
+  "welcomeStepsTitle": {
+    "message": "30 秒试用",
+    "description": "步骤标题。"
+  },
+  "welcomeStep1": {
+    "message": "打开任意网页（记为 A）。",
+    "description": "第一步。"
+  },
+  "welcomeStep2": {
+    "message": "点击 A 页面里的普通链接。新标签页会在 Tab Tree 侧边栏中成为 A 的子节点。",
+    "description": "第二步。"
+  },
+  "welcomeStep3": {
+    "message": "用 Cmd/Ctrl+T 或地址栏新开标签页：它会保持为顶级，与 A 平级。",
+    "description": "第三步。"
+  },
+  "welcomeRestoreHint": {
+    "message": "重启 Chrome 后，Tab Tree 会根据本地快照重建这棵树。安装扩展之前就已经打开的标签页没有可追溯的打开者，会先显示为顶级；把它们拖到父节点上即可一步修正。",
+    "description": "恢复说明。"
+  },
+  "welcomeReopen": {
+    "message": "如何再次打开本指南",
+    "description": "页脚按钮。"
+  },
+  "welcomeReopenTip": {
+    "message": "点击 Tab Tree 侧边栏里的 ? 按钮，或打开 chrome://extensions → Tab Tree → 详情 → 扩展程序选项。",
+    "description": "重新打开说明。"
+  },
+  "welcomeClose": {
+    "message": "关闭此标签页",
+    "description": "页脚按钮。"
+  },
+  "welcomeFooter": {
+    "message": "纯本地 · 无账号 · 无遥测",
+    "description": "页脚说明。"
+  },
+  "welcomePanelOpened": {
+    "message": "侧边栏正在打开。请认准蓝色的 Tab Tree 标题和“搜索标签页”输入框。",
+    "description": "成功提示。"
+  },
+  "welcomePanelFailed": {
+    "message": "Chrome 没有自动打开侧边栏。可以使用下方的整页树状视图，或把 Tab Tree 固定到工具栏后点击图标。",
+    "description": "失败提示。"
+  },
+  "welcomeMore": {
+    "message": "+ 更多标签页",
+    "description": "预览溢出提示。"
+  },
+  "welcomeRestoredBadge": {
+    "message": "已恢复",
+    "description": "预览中的恢复徽标。"
+  },
+  "welcomeRestoring": {
+    "message": "恢复中",
+    "description": "恢复进度后缀。"
+  },
+  "welcomeNone": {
+    "message": "无",
+    "description": "没有恢复的链接。"
+  },
+  "welcomeUnavailable": {
+    "message": "不可用",
+    "description": "功能不可用。"
+  },
+  "welcomeYes": {
+    "message": "可用",
+    "description": "功能可用。"
+  },
+  "help": {
+    "message": "帮助与安装检查",
+    "description": "帮助按钮。"
+  },
+  "linkHintTitle": {
+    "message": "从链接打开的标签会嵌套在这里",
+    "description": "面板首次提示标题。"
+  },
+  "linkHintBody": {
+    "message": "在页面里点击链接，新标签页就会嵌套在该页面下面。",
+    "description": "面板首次提示正文。"
+  },
+  "learnMore": {
+    "message": "了解更多",
+    "description": "首次提示按钮。"
+  },
+  "dismiss": {
+    "message": "关闭提示",
+    "description": "关闭提示。"
+  },
+  "restoringLinks": {
+    "message": "正在恢复标签…",
+    "description": "恢复进度标签。"
+  },
+  "restorePartial": {
+    "message": "恢复不完整",
+    "description": "部分恢复提示。"
   }
 }

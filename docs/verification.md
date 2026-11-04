@@ -1,6 +1,90 @@
-# Verification report — Tab Tree 0.1.3
+# Verification report — Tab Tree 0.2.0
 
-Date: 2026-11-03
+Date: 2026-11-04 · macOS arm64 · Node.js 24.21.0 · npm 11.19.0 ·
+Chrome for Testing 156.0.8078.4 (headless CDP automation).
+
+This report supersedes the 0.1.3 report below. 0.2.0 is a **discoverability and
+restart-robustness** release: the tree engine is unchanged, no permissions were
+added, and the packaged extension contains 21 files.
+
+## Why 0.2.0 exists
+
+A user installed the extension, restarted Chrome, and reported “no tree
+inheritance”. The screenshot supplied with the report showed Chrome's **native
+vertical tab strip** (a `feishu` tab group, flat rows, no Tab Tree header, no
+search box, no status footer), not the extension's side panel. That strip is
+browser UI: no extension can restyle or indent it, and the tree cannot live
+there.
+
+The extension's panel was working, but nothing told the user where to look.
+0.2.0 addresses that and hardens the case where the real panel is open but the
+tree is still flat because Chrome restored the tabs slowly:
+
+- On install/update, `welcome.html` opens once per version. It explains the
+  native-strip/side-panel distinction, renders the **live tree**, shows a setup
+  check (`v0.2.0`, tabs in window, tracked links, restored links, side-panel
+  support), and has a one-click “Open the Tab Tree side panel” button plus a
+  full-page fallback.
+- The side panel has a first-run hint (visible while no link/restore relation
+  exists), a “Learn more” link and a permanent `?` help button.
+- `docs/troubleshooting.md` is a Chinese, step-by-step “I don't see the tree”
+  guide, including panel left/right settings.
+- Restore hardening: the reconciliation window is now 60 s (8 s quiet settle,
+  was 15 s), a partial rebuild can never overwrite the last complete snapshot,
+  the pending record is persisted in `storage.session`, a reclaimed MV3 worker
+  resumes the reconciliation on wake, and a manual drag made during the window
+  always wins over an inferred restore relation.
+
+## Automated results
+
+| Command | Result |
+| --- | --- |
+| `npm run check` | ✔ 26 files · manifest v0.2.0 (`tabs, sidePanel, storage, webNavigation`) · 78 EN / 78 ZH i18n keys · no `<all_urls>` · real remote-code scan |
+| `npm test` | ✔ **45/45** unit tests (36 tree-engine + 9 session-state codec) |
+| `npm run build` | ✔ `dist/tab-tree-v0.2.0.zip` — 21 files, 63.0 KiB, `sha256 dc7848623bd2ff85df96ce46a1b46a6acaa4fd87966f6a96be98c7705c47fbd2` |
+| `npm run smoke` | ✔ **44/44** checks in a real Chrome for Testing instance |
+| `npm run test:e2e` | ✔ **8/8** real-link checks |
+| `npm run test:panel` | ✔ **11/11** drag / multi-window checks |
+| `npm run test:onboarding` | ✔ **15/15** setup-guide, live-preview and hint checks |
+| `npm run test:restart` | ✔ **19/19** checks across two Chrome processes |
+| `npm run verify:all` | ✔ exit 0 — all of the above in one run |
+
+## Evidence that the panel tree itself still works
+
+The onboarding suite opens the real extension, follows a real A→B link, then
+asserts the guide's live preview indents B by 16 px under A and that the panel
+takes the same parent. The smoke suite asserts the same in the actual
+`sidepanel.html` document (`data-parent-id`, `data-depth`). Screenshots:
+`docs/screenshot-light.png`, `docs/screenshot-dark.png`, `docs/welcome.png`.
+
+## Restore guards added in 0.2.0
+
+| Guard | Test coverage |
+| --- | --- |
+| 60 s window + 8 s quiet settle | restart suite passes 19/19 with the new timings; the 60 s hard deadline itself is not reached by the test |
+| no partial `storage.local` snapshot overwrite while pending | code guard; the restart suite confirms the snapshot is still restorable after the run |
+| pending record persisted in `storage.session` and resumed after worker reclaim | codec unit tests cover `restorePending` encode/decode and round-trip; the resume branch itself is code-reviewed (not browser-automated — see limits) |
+| manual drag wins over a late inferred relation | reparent/override unit tests + panel drag suite; the restore-vs-manual precedence guard is code-reviewed |
+| “Restoring…” footer and partial marker | panel strings and `restoring` snapshot field covered by smoke/restart assertions |
+
+## Honest limits
+
+- The mid-restore worker kill (the exact resume path) is not automated: the
+  existing worker-reclaim test runs after restore has settled. The codec and
+  resume branch are unit/integration reviewed, but a browser test that kills
+  the worker while `restoring` is non-null is still on the roadmap.
+- Side-panel chrome (where Chrome places it, whether it is open) cannot be
+  driven in headless Chrome; the suites use the same `sidepanel.html` document
+  as a normal tab, and `chrome.sidePanel.open()` from the guide is manually
+  verified only.
+- Tabs that were already open **before installation** have no known opener.
+  The guide says so; they start as roots and can be dragged under a parent.
+
+---
+
+# Appendix — Tab Tree 0.1.3 verification report
+
+Date: 2026-11-03 (historical)
 Environment: macOS (arm64), Node.js 24.21.0, npm 11.19.0, Chrome for Testing
 156.0.8078.4 (Playwright cache), headless CDP automation.
 

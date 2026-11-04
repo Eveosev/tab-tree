@@ -1,6 +1,6 @@
 # Tab Tree — research notes
 
-Status: research updated for v0.1.3 · Scope: Chrome MV3 side panel · Date: 2026-11-03
+Status: research updated for v0.2.0 · Scope: Chrome MV3 side panel · Date: 2026-11-03
 
 ## 1. Problem
 
@@ -57,7 +57,7 @@ The native Chrome tab strip is a flat row. Users who research in branches (docs 
 | D9 | Pointer-event drag, not HTML5 DnD | `dragstart` / `dragover` | HTML5 DnD is unreliable in narrow side panels and needs extra drag images; pointer events give precise hit testing and auto-scroll. |
 | D10 | No cloud sync in v1 | `storage.sync` | 8 KB/item quota and write-rate limits cannot hold a large forest; local only, no telemetry. |
 
-## 5. What ships in v0.1.3
+## 5. What ships in v0.2.0
 
 - Tree built from creation edges captured via `webNavigation` (persisted per session), one root per independently opened tab.
 - Fixed 16 px indentation per level; collapse/expand with persisted state.
@@ -65,7 +65,7 @@ The native Chrome tab strip is a flat row. Users who research in branches (docs 
 - Keyboard navigation (`↑/↓/Home/End/←/→/Enter/Delete`), context menu, search with ancestor preservation.
 - Virtualized list for large windows (32 px fixed rows, overscan 8).
 - Session restore via fingerprint snapshot; uncertain links are marked. Restore
-  retries across Chrome’s asynchronous tab restoration for up to 15 s. Marker,
+  retries across Chrome’s asynchronous tab restoration for up to 60 s and resumes the pending restore after an MV3 worker reclaim. Marker,
   edges, overrides, collapse and restored flags are persisted together, so a
   plain worker wake never replays the snapshot.
 - “Sort native tabs by tree” + optional automatic sync after a drag.

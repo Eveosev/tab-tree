@@ -154,5 +154,169 @@
         "content": "$2"
       }
     }
+  },
+  "welcomeTitle": {
+    "message": "Tab Tree is installed",
+    "description": "First-run guide heading."
+  },
+  "welcomeLead": {
+    "message": "Tabs you open from a link become children of the page that opened them. The tree lives in Chrome's side panel.",
+    "description": "First-run guide lead paragraph."
+  },
+  "welcomeNativeTitle": {
+    "message": "Chrome's built-in vertical tabs are not Tab Tree",
+    "description": "First-run callout title."
+  },
+  "welcomeNativeBody": {
+    "message": "Chrome's own left-hand tab strip (the one with tab groups) cannot be restyled or indented by any extension. Tab Tree is a separate side panel. Look for the blue Tab Tree header and the search box.",
+    "description": "First-run callout body."
+  },
+  "welcomeOpenPanel": {
+    "message": "Open the Tab Tree side panel",
+    "description": "Primary first-run button."
+  },
+  "welcomeOpenFull": {
+    "message": "Open the full-page tree",
+    "description": "Secondary first-run button."
+  },
+  "welcomeTreeTitle": {
+    "message": "Your current tabs",
+    "description": "Live preview heading."
+  },
+  "welcomeNoTabs": {
+    "message": "No tabs in this window yet.",
+    "description": "Empty live preview."
+  },
+  "welcomePreviewHint": {
+    "message": "This is the same tree the side panel shows. Rows indented to the right were opened from the row above them.",
+    "description": "Preview hint."
+  },
+  "welcomeCheckTitle": {
+    "message": "Setup check",
+    "description": "Diagnostics heading."
+  },
+  "welcomeCheckVersion": {
+    "message": "Extension version",
+    "description": "Diagnostics row."
+  },
+  "welcomeCheckTabs": {
+    "message": "Tabs in this window",
+    "description": "Diagnostics row."
+  },
+  "welcomeCheckLinks": {
+    "message": "Tracked link relationships",
+    "description": "Diagnostics row."
+  },
+  "welcomeCheckRestore": {
+    "message": "Links restored after restart",
+    "description": "Diagnostics row."
+  },
+  "welcomeCheckPanel": {
+    "message": "Side panel support",
+    "description": "Diagnostics row."
+  },
+  "welcomeNoLinksHint": {
+    "message": "No link relationships yet. Open a page, then click a link inside it (or Cmd/Ctrl-click): the new tab will appear indented under that page here.",
+    "description": "Shown when no captured links exist."
+  },
+  "welcomeLinksHint": {
+    "message": "Link capture is working. Click a link inside a page and the new tab will nest under that page here.",
+    "description": "Shown when links exist."
+  },
+  "welcomeStepsTitle": {
+    "message": "Try it in 30 seconds",
+    "description": "Steps heading."
+  },
+  "welcomeStep1": {
+    "message": "Open any page (call it A).",
+    "description": "First step."
+  },
+  "welcomeStep2": {
+    "message": "Click a normal link inside A. The new tab becomes a child of A in the Tab Tree panel.",
+    "description": "Second step."
+  },
+  "welcomeStep3": {
+    "message": "Open a tab with Cmd/Ctrl+T or the address bar: it stays top-level, next to A.",
+    "description": "Third step."
+  },
+  "welcomeRestoreHint": {
+    "message": "Restarting Chrome? Tab Tree rebuilds the tree from a local snapshot. Tabs that were already open before installation have no known opener and start as top-level rows; drag them onto a parent to fix that in one gesture.",
+    "description": "Restore explanation."
+  },
+  "welcomeReopen": {
+    "message": "How to reopen this guide",
+    "description": "Footer button."
+  },
+  "welcomeReopenTip": {
+    "message": "Click the ? button in the Tab Tree panel, or open chrome://extensions → Tab Tree → Details → Extension options.",
+    "description": "Reopen instructions."
+  },
+  "welcomeClose": {
+    "message": "Close this tab",
+    "description": "Footer button."
+  },
+  "welcomeFooter": {
+    "message": "Local-only · no account · no telemetry",
+    "description": "Footer note."
+  },
+  "welcomePanelOpened": {
+    "message": "The side panel is opening. Look for the blue Tab Tree header and the Search tabs box.",
+    "description": "Success note."
+  },
+  "welcomePanelFailed": {
+    "message": "Chrome would not open the panel automatically. Use the full-page tree below, or pin Tab Tree in the toolbar and click its icon.",
+    "description": "Failure note."
+  },
+  "welcomeMore": {
+    "message": "+ more tabs",
+    "description": "Preview overflow row."
+  },
+  "welcomeRestoredBadge": {
+    "message": "restored",
+    "description": "Restored relation badge in the preview."
+  },
+  "welcomeRestoring": {
+    "message": "restoring",
+    "description": "Restore progress suffix."
+  },
+  "welcomeNone": {
+    "message": "none",
+    "description": "No restored links."
+  },
+  "welcomeUnavailable": {
+    "message": "not available",
+    "description": "Feature unavailable."
+  },
+  "welcomeYes": {
+    "message": "available",
+    "description": "Feature available."
+  },
+  "help": {
+    "message": "Help & setup",
+    "description": "Help button."
+  },
+  "linkHintTitle": {
+    "message": "Links open as children here",
+    "description": "First-run hint title in the panel."
+  },
+  "linkHintBody": {
+    "message": "Click a link inside a page and the new tab nests under that page.",
+    "description": "First-run hint body."
+  },
+  "learnMore": {
+    "message": "Learn more",
+    "description": "First-run hint button."
+  },
+  "dismiss": {
+    "message": "Dismiss",
+    "description": "Dismiss hint."
+  },
+  "restoringLinks": {
+    "message": "Restoring tabs…",
+    "description": "Restore progress label."
+  },
+  "restorePartial": {
+    "message": "Restore incomplete",
+    "description": "Partial restore tooltip."
   }
 }
